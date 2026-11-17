@@ -38,7 +38,7 @@ val ciDiagnostic = StringBuilder()
 val captureDiagnostic = org.gradle.api.logging.StandardOutputListener { text ->
     synchronized(ciDiagnostic) { ciDiagnostic.append(text); if (ciDiagnostic.length > 30000) ciDiagnostic.delete(0, ciDiagnostic.length - 30000) }
 }
-gradle.services.get(org.gradle.internal.logging.LoggingManagerInternal::class.java).apply {
+logging.apply {
     addStandardOutputListener(captureDiagnostic)
     addStandardErrorListener(captureDiagnostic)
 }
