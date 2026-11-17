@@ -24,6 +24,7 @@ android {
 }
 
 dependencies {
+    implementation("com.github.topjohnwu.libsu:core:5.2.2")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.ui)
@@ -31,3 +32,4 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
