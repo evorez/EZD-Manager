@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">EZD Manager</string>
+    <string name="app_subtitle">ezd.manager</string>
+    <string name="daemon_channel_name">EZD Root Daemon</string>
+    <string name="daemon_channel_desc">Persistent background service for root shell execution and per-app profile monitoring.</string>
+    <string name="daemon_notif_title">EZD Root Daemon Active</string>
+    <string name="daemon_notif_text">Handling root commands and foreground profile automation.</string>
+</resources>
