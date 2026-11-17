@@ -1,0 +1,56 @@
+name: Build APK and module
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build components
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Assemble module ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/module
+          cp -r module/module.prop module/customize.sh module/service.sh module/META-INF dist/module/
+          cp app/build/outputs/apk/debug/app-debug.apk dist/module/companion.apk
+          chmod 0755 dist/module/customize.sh dist/module/service.sh dist/module/META-INF/com/google/android/update-binary
+          (cd dist/module && zip -r ../EZD-Manager-module.zip .)
+          cp app/build/outputs/apk/debug/app-debug.apk dist/EZD-Manager-debug.apk
+
+      - name: Upload APK and module ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: EZD-Manager-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

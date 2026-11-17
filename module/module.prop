@@ -1,0 +1,6 @@
+id=ezd_manager
+name=EZD Manager
+version=0.1.0
+versionCode=1
+author=Evorez
+description=EZD Manager companion foundation. Controls are added only after verified device capability detection.
