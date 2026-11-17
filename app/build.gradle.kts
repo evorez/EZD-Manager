@@ -33,18 +33,3 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-// Temporary CI diagnostics: surface build output as a check annotation when logs are inaccessible.
-val ciDiagnostic = StringBuilder()
-val captureDiagnostic = org.gradle.api.logging.StandardOutputListener { text ->
-    synchronized(ciDiagnostic) { ciDiagnostic.append(text); if (ciDiagnostic.length > 30000) ciDiagnostic.delete(0, ciDiagnostic.length - 30000) }
-}
-logging.apply {
-    addStandardOutputListener(captureDiagnostic)
-    addStandardErrorListener(captureDiagnostic)
-}
-gradle.buildFinished { result ->
-    if (result.failure != null) {
-        val output = synchronized(ciDiagnostic) { ciDiagnostic.toString().takeLast(20000) }
-        println("::error::" + (result.failure.toString() + "\n" + output).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))
-    }
-}
