@@ -102,7 +102,7 @@ private fun FrequencyMenu(policy: Policy, device: DeviceController) {
         Button(onClick = { expanded = true }, enabled = !device.busy) { Text("Set max") }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.heightIn(max = 360.dp)) {
             policy.frequencies.forEach { value ->
-                DropdownMenuItem(text = { Text(freq(value)) }, onClick = { expanded = false; device.setMax(policy, value) }, enabled = !device.busy)
+                DropdownMenuItem(text = { Text(freq(value)) }, onClick = { expanded = false; device.setMax(policy, value) }, enabled = !device.busy && policy.min != null && value >= policy.min)
             }
         }
     }

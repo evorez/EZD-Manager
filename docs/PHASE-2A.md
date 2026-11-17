@@ -11,3 +11,7 @@ The first readable `scaling_max_freq` for each discovered policy is saved in pri
 3. On CPU note each current max and saved reset value. For a policy exposing Set max, choose a supported value not below its current minimum. Check for a verified message and compare the reported max. If rejected or clamped, check the error/read-back instead. The kernel may immediately change the value again.
 4. Tap that policy's Reset and verify the saved value is read back. Repeat for any other changed policies. If reset fails, do not assume the value was restored; inspect the report and reboot if needed.
 5. Reboot and confirm the app does not reapply settings. Reopen, grant root and check the saved reset values. This phase does not implement boot persistence or a bootloop guard; do not install the module as a tuning solution.
+
+## Additional safeguards
+
+Baselines are scoped to the Android build fingerprint, kernel version, policy ID and CPU membership so another ROM/kernel/topology does not inherit stale reset values. Old unscoped baselines are ignored. Reset still means first observed, not factory default. Values below the observed minimum are disabled in the menu; every write (including reset) rechecks the minimum and refuses an unreadable/invalid minimum. No minimum or thermal node is modified. Test rotation/backgrounding during a root request, and retry after denial.

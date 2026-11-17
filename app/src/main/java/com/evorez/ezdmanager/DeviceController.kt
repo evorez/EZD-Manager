@@ -27,6 +27,7 @@ internal class DeviceController(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private val prefs = context.getSharedPreferences("cpu_baselines", Context.MODE_PRIVATE)
     private var active = false
+    private var destroyed = false
     private var polling = false
     private var rootShell: Shell? = null
     private val failedBaselines = mutableSetOf<String>()
@@ -52,10 +53,10 @@ internal class DeviceController(private val context: Context) {
 
     fun start() { if (!active) { active = true; main.post(tick) } }
     fun stop() { active = false; main.removeCallbacks(tick) }
-    fun destroy() { stop(); worker.shutdown() }
+    fun destroy() { destroyed = true; stop(); worker.shutdown() }
 
     fun grantRoot() {
-        if (busy) return
+        if (busy || polling || destroyed) return
         busy = true
         root = "Requesting…"
         worker.execute {
@@ -65,6 +66,7 @@ internal class DeviceController(private val context: Context) {
                 Shell.getShell().also { rootShell = it }.isRoot
             } catch (_: Exception) { false }
             main.post {
+                if (destroyed) return@post
                 busy = false
                 root = if (granted) "Granted" else "Not granted"
                 message = if (granted) "" else "Root unavailable or denied. Check your root manager."
@@ -89,6 +91,7 @@ internal class DeviceController(private val context: Context) {
         worker.execute {
             val data = try { scan() } catch (_: Exception) { null }
             main.post {
+                if (destroyed) return@post
                 polling = false
                 if (data == null) {
                     root = "Unavailable"
@@ -110,7 +113,8 @@ internal class DeviceController(private val context: Context) {
             val p = line.split('|').map { it.trim() }
             if (p.size == 10 && p[0] == "P" && p[1].matches(Regex("policy[0-9]+"))) {
                 val max = p[5].toLongOrNull()?.takeIf { it > 0 }
-                val key = p[1]
+                // Do not reuse another ROM/kernel or CPU topology's baseline.
+                val key = "${Build.FINGERPRINT}:${System.getProperty("os.version")}:${p[1]}:${p[2]}"
                 // Save the first readable baseline before allowing any write, never overwrite it.
                 if (!prefs.contains(key) && max != null && !prefs.edit().putLong(key, max).commit()) failedBaselines.add(key)
                 val original = if (key !in failedBaselines && prefs.contains(key)) prefs.getLong(key, 0).takeIf { it > 0 } else null
@@ -127,7 +131,7 @@ internal class DeviceController(private val context: Context) {
     fun setMax(policy: Policy, target: Long, reset: Boolean = false) {
         // Only use a currently detected policy and a known available value, or its saved baseline.
         val current = snapshot.policies.find { it.id == policy.id } ?: return
-        if (busy || root != "Granted" || !current.writable || current.original == null || target <= 0 ||
+        if (destroyed || busy || polling || root != "Granted" || !current.writable || current.original == null || target <= 0 ||
             (if (reset) target != current.original else target !in current.frequencies)) return
         busy = true
         message = "Applying…"
@@ -138,7 +142,12 @@ internal class DeviceController(private val context: Context) {
                 else {
                     // The id and target are validated above; only scaling_max_freq is ever written.
                     val path = "/sys/devices/system/cpu/cpufreq/${current.id}/scaling_max_freq"
-                    val write = shell.newJob().add("printf '%s' '$target' > '$path'").exec()
+                    // Recheck the live minimum on the worker immediately before writing.
+                    // Never lower scaling_min_freq to make a requested maximum fit.
+                    val minPath = "/sys/devices/system/cpu/cpufreq/${current.id}/scaling_min_freq"
+                    val command = "minimum=\$(cat '$minPath') && " +
+                        "[ \"\$minimum\" -gt 0 ] && [ '$target' -ge \"\$minimum\" ] && printf '%s' '$target' > '$path'"
+                    val write = shell.newJob().add(command).exec()
                     val read = shell.newJob().add("cat '$path'").exec()
                     val actual = if (read.isSuccess) read.out.firstOrNull()?.trim()?.toLongOrNull() else null
                     when {
@@ -151,6 +160,7 @@ internal class DeviceController(private val context: Context) {
             } catch (_: Exception) { "Write or read-back failed; result unknown." }
             val data = try { scan() } catch (_: Exception) { null }
             main.post {
+                if (destroyed) return@post
                 busy = false
                 message = outcome
                 if (data != null) snapshot = data else { root = "Unavailable"; snapshot = Snapshot() }
@@ -163,6 +173,7 @@ internal class DeviceController(private val context: Context) {
         appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
         appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         appendLine("Root: $root")
+        appendLine("Last operation: ${message.ifBlank { "None" }}")
         appendLine("Battery: $battery")
         appendLine("CPU policies: ${snapshot.policies.size}")
         snapshot.policies.forEach {
