@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.evorez.ezdmanager.model.RootStatus
+import com.evorez.ezdmanager.root.HwResult
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.GlassCard
 import com.evorez.ezdmanager.ui.components.GlassSlider
 import com.evorez.ezdmanager.ui.components.GlowIcon
@@ -52,7 +54,7 @@ fun GpuScreen(
                             text = if (gpu.supported) {
                                 "Now ${gpu.currentMhz ?: "?"} MHz · ${gpu.minMhz ?: "?"}–${gpu.maxMhz ?: "?"} MHz"
                             } else {
-                                "Hardware inspection"
+                                "Probe: ${gpu.probeResult?.shortTag() ?: "Pending"}"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = JetBrainsMono,
@@ -66,16 +68,51 @@ fun GpuScreen(
             }
         }
 
-        if (state.rootStatus != RootStatus.GRANTED || !gpu.supported) {
+        val rootGranted = state.rootStatus == RootStatus.GRANTED
+        if (!gpu.supported || !rootGranted || gpu.probeResult !is HwResult.Applied) {
             GlassCard(cornerRadius = 24.dp) {
-                Text("Not supported on this device", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (gpu.supported) "GPU Probe & Write Status" else "GPU Hardware Probe",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    StatusPill(
+                        label = gpu.probeResult?.shortTag() ?: if (gpu.supported) "ReadOnly" else "Pending",
+                        accent = if (gpu.probeResult is HwResult.Applied) visuals.successColor else visuals.warningColor
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = gpu.reason.ifBlank { "Grant root access or check Adreno KGSL / Mali devfreq sysfs interfaces." },
+                    text = gpu.reason.ifBlank { "Probing /sys/class/devfreq/*, /proc/gpufreq/*, /proc/gpufreqv2/* & /sys/class/kgsl/kgsl-3d0." },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                state.probeReport?.let { rep ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Kernel: ${rep.kernelVersion} · SELinux: ${rep.selinuxMode} · Nodes: ${gpu.existingNodes.size} found, ${gpu.writableNodes.size} writable",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = visuals.accent
+                    )
+                }
+                if (gpu.pathsTried.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Paths tried: ${gpu.pathsTried.joinToString(", ")}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
+        }
+
+        if (!gpu.supported) {
             return
         }
 
@@ -88,7 +125,7 @@ fun GpuScreen(
                 Text("GPU Controls", style = MaterialTheme.typography.titleLarge)
                 OutlinedButton(
                     onClick = onResetGpu,
-                    enabled = !state.busy,
+                    enabled = !state.busy && rootGranted,
                     shape = CircleShape,
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                 ) {
@@ -107,7 +144,7 @@ fun GpuScreen(
                     Box {
                         FilledTonalButton(
                             onClick = { govMenu = true },
-                            enabled = !state.busy,
+                            enabled = !state.busy && rootGranted && gpu.govPath != null,
                             shape = CircleShape,
                             modifier = Modifier
                                 .defaultMinSize(minHeight = 48.dp)
@@ -132,7 +169,8 @@ fun GpuScreen(
             }
 
             val freqs = gpu.availableMhz
-            if (freqs.size >= 2) {
+            val canWriteFreqs = rootGranted && (gpu.minPath != null || gpu.maxPath != null)
+            if (freqs.size >= 2 && canWriteFreqs) {
                 Spacer(Modifier.height(12.dp))
                 var minIdx by remember(gpu.minMhz, freqs) {
                     mutableStateOf(freqs.indexOfFirst { it >= (gpu.minMhz ?: freqs.first()) }.coerceAtLeast(0))
@@ -170,7 +208,11 @@ fun GpuScreen(
             } else {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "GPU frequency table not exposed as selectable steps by this kernel.",
+                    text = if (freqs.isEmpty()) {
+                        "GPU frequency table not exposed as selectable steps (${gpu.reason})."
+                    } else {
+                        "Detected GPU OPP frequencies (${freqs.size} steps): ${freqs.first()}–${freqs.last()} MHz. ${gpu.reason}"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

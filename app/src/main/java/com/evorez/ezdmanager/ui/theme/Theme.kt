@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.sp
 import com.evorez.ezdmanager.R
 import com.evorez.ezdmanager.model.AccentColorPreset
 import com.evorez.ezdmanager.model.AppAnimStyle
+import com.evorez.ezdmanager.model.AppFontStyle
+import com.evorez.ezdmanager.model.BackgroundTexturePreset
 import com.evorez.ezdmanager.model.EzdThemeStyle
 import com.evorez.ezdmanager.model.ThemeMode
 
@@ -47,7 +49,6 @@ data class EzdVisualTokens(
     val blurAllowed: Boolean,
     val gradientsAllowed: Boolean,
     val blurIntensity: Float = 0.78f,
-    val hapticsEnabled: Boolean = true,
     val reduceMotion: Boolean = false,
     val animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH,
     val bgTopGlow: Color,
@@ -64,7 +65,12 @@ data class EzdVisualTokens(
     val successColor: Color,
     val warningColor: Color,
     val textPrimary: Color,
-    val textSecondary: Color
+    val textSecondary: Color,
+    val solidSurfaceBase: Color = bgBase,
+    val solidSurfaceElevated: Color = bgBase,
+    val texturePreset: BackgroundTexturePreset = BackgroundTexturePreset.PLAIN,
+    val textureOpacity: Float = 0.35f,
+    val fontStyle: AppFontStyle = AppFontStyle.SYSTEM
 )
 
 val LocalEzdVisuals = staticCompositionLocalOf {
@@ -77,23 +83,41 @@ fun buildVisualTokens(
     systemDark: Boolean = true,
     accentPreset: AccentColorPreset = AccentColorPreset.THEME_DEFAULT,
     blurIntensity: Float = 0.78f,
-    hapticsEnabled: Boolean = true,
     reduceMotion: Boolean = false,
-    animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH
+    animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH,
+    texturePreset: BackgroundTexturePreset = BackgroundTexturePreset.PLAIN,
+    textureOpacity: Float = 0.35f,
+    fontStyle: AppFontStyle = AppFontStyle.SYSTEM
 ): EzdVisualTokens {
     val raw = buildBaseVisualTokens(style, mode, systemDark)
     val customAccent = accentPreset.argb?.let { Color(it) }
     val clampedBlur = if (raw.isLiteMode) 0f else blurIntensity.coerceIn(0f, 1f)
+    val solidBase = opaqueBlend(raw.glassSurface, raw.bgBase)
+    val solidElevated = opaqueBlend(raw.glassSurfaceElevated, raw.bgBase)
     return raw.copy(
         blurAllowed = raw.blurAllowed && clampedBlur > 0.03f,
         blurIntensity = clampedBlur,
-        hapticsEnabled = hapticsEnabled,
         reduceMotion = reduceMotion || raw.isLiteMode,
         animStyle = animStyle,
         accent = customAccent ?: raw.accent,
         subtleRedAccent = customAccent ?: raw.subtleRedAccent,
         iconGlowColor = customAccent ?: raw.iconGlowColor,
-        pillActiveGlass = customAccent?.copy(alpha = 0.24f) ?: raw.pillActiveGlass
+        pillActiveGlass = customAccent?.copy(alpha = 0.24f) ?: raw.pillActiveGlass,
+        solidSurfaceBase = solidBase,
+        solidSurfaceElevated = solidElevated,
+        texturePreset = texturePreset,
+        textureOpacity = textureOpacity.coerceIn(0f, 1f),
+        fontStyle = fontStyle
+    )
+}
+
+private fun opaqueBlend(foreground: Color, backdrop: Color): Color {
+    val a = foreground.alpha
+    return Color(
+        red = foreground.red * a + backdrop.red * (1f - a),
+        green = foreground.green * a + backdrop.green * (1f - a),
+        blue = foreground.blue * a + backdrop.blue * (1f - a),
+        alpha = 1f
     )
 }
 
@@ -461,120 +485,152 @@ private fun buildColorScheme(tokens: EzdVisualTokens): ColorScheme {
         darkColorScheme(
             primary = tokens.accent,
             onPrimary = if (tokens.accent == Color(0xFFCBD5E1) || tokens.accent == Color(0xFFFBBF24) || tokens.accent == Color(0xFF22D3EE)) Color(0xFF0A0D12) else Color.White,
-            primaryContainer = tokens.accent.copy(alpha = 0.20f),
+            primaryContainer = tokens.accent.copy(alpha = 0.22f),
             onPrimaryContainer = tokens.textPrimary,
             secondary = tokens.accent.copy(alpha = 0.85f),
             onSecondary = Color(0xFF0F1115),
+            secondaryContainer = tokens.solidSurfaceElevated,
+            onSecondaryContainer = tokens.textPrimary,
             background = tokens.bgBase,
             onBackground = tokens.textPrimary,
-            surface = tokens.glassSurface,
+            surface = tokens.solidSurfaceBase,
             onSurface = tokens.textPrimary,
-            surfaceVariant = tokens.glassSurfaceElevated,
+            surfaceVariant = tokens.solidSurfaceElevated,
             onSurfaceVariant = tokens.textSecondary,
+            surfaceDim = tokens.bgBase,
+            surfaceBright = tokens.solidSurfaceElevated,
+            surfaceContainerLowest = tokens.bgBase,
+            surfaceContainerLow = tokens.solidSurfaceBase,
+            surfaceContainer = tokens.solidSurfaceBase,
+            surfaceContainerHigh = tokens.solidSurfaceElevated,
+            surfaceContainerHighest = tokens.solidSurfaceElevated,
             outline = tokens.glassBorder,
-            outlineVariant = if (tokens.isLiteMode) Color(0x33F5ECE0) else Color(0x1EFFFFFF),
+            outlineVariant = if (tokens.isLiteMode) Color(0x33F5ECE0) else Color(0x26FFFFFF),
             error = Color(0xFFFF5A6E),
             onError = Color.White
         )
     } else {
+        val subtleTintSurface = opaqueBlend(tokens.accent.copy(alpha = 0.035f), tokens.solidSurfaceBase)
+        val elevatedClean = opaqueBlend(Color.White.copy(alpha = 0.94f), tokens.bgBase)
+        val cleanLowest = Color.White
         lightColorScheme(
             primary = tokens.accent,
             onPrimary = Color.White,
-            primaryContainer = tokens.accent.copy(alpha = 0.14f),
+            primaryContainer = opaqueBlend(tokens.accent.copy(alpha = 0.14f), Color.White),
             onPrimaryContainer = tokens.textPrimary,
-            secondary = tokens.accent.copy(alpha = 0.8f),
+            secondary = tokens.accent.copy(alpha = 0.85f),
             onSecondary = Color.White,
+            secondaryContainer = opaqueBlend(tokens.accent.copy(alpha = 0.10f), Color.White),
+            onSecondaryContainer = tokens.textPrimary,
             background = tokens.bgBase,
             onBackground = tokens.textPrimary,
-            surface = tokens.glassSurface,
+            surface = elevatedClean,
             onSurface = tokens.textPrimary,
-            surfaceVariant = tokens.glassSurfaceElevated,
+            surfaceVariant = subtleTintSurface,
             onSurfaceVariant = tokens.textSecondary,
+            surfaceDim = tokens.bgBottomGlow,
+            surfaceBright = cleanLowest,
+            surfaceContainerLowest = cleanLowest,
+            surfaceContainerLow = elevatedClean,
+            surfaceContainer = elevatedClean,
+            surfaceContainerHigh = subtleTintSurface,
+            surfaceContainerHighest = subtleTintSurface,
             outline = tokens.glassBorder,
-            outlineVariant = Color(0x1A000000),
+            outlineVariant = Color(0x220F172A),
             error = Color(0xFFDC2626),
             onError = Color.White
         )
     }
 }
 
-val EzdTypography = Typography(
-    headlineLarge = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Bold,
-        fontSize = 27.sp,
-        lineHeight = 33.sp,
-        letterSpacing = (-0.5).sp
-    ),
-    headlineMedium = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Bold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = (-0.3).sp
-    ),
-    headlineSmall = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp,
-        letterSpacing = (-0.2).sp
-    ),
-    titleLarge = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 17.sp,
-        lineHeight = 22.sp
-    ),
-    titleMedium = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 15.sp,
-        lineHeight = 20.sp
-    ),
-    titleSmall = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 22.sp
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
-    ),
-    bodySmall = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Normal,
-        fontSize = 12.sp,
-        lineHeight = 16.sp
-    ),
-    labelLarge = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
-    ),
-    labelMedium = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 14.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = PlusJakartaSans,
-        fontWeight = FontWeight.Medium,
-        fontSize = 10.sp,
-        lineHeight = 12.sp
+fun resolveFontFamily(fontStyle: AppFontStyle): FontFamily = when (fontStyle) {
+    AppFontStyle.SYSTEM -> FontFamily.Default
+    AppFontStyle.SERIF -> FontFamily.Serif
+    AppFontStyle.TYPEWRITER -> FontFamily.Monospace
+}
+
+fun buildEzdTypography(fontStyle: AppFontStyle): Typography {
+    val family = resolveFontFamily(fontStyle)
+    return Typography(
+        headlineLarge = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Bold,
+            fontSize = 27.sp,
+            lineHeight = 33.sp,
+            letterSpacing = (-0.5).sp
+        ),
+        headlineMedium = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Bold,
+            fontSize = 22.sp,
+            lineHeight = 28.sp,
+            letterSpacing = (-0.3).sp
+        ),
+        headlineSmall = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp,
+            lineHeight = 24.sp,
+            letterSpacing = (-0.2).sp
+        ),
+        titleLarge = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 17.sp,
+            lineHeight = 22.sp
+        ),
+        titleMedium = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 15.sp,
+            lineHeight = 20.sp
+        ),
+        titleSmall = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Medium,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        ),
+        bodyLarge = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Normal,
+            fontSize = 15.sp,
+            lineHeight = 22.sp
+        ),
+        bodyMedium = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Normal,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        ),
+        bodySmall = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Normal,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        ),
+        labelLarge = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        ),
+        labelMedium = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Medium,
+            fontSize = 11.sp,
+            lineHeight = 14.sp
+        ),
+        labelSmall = TextStyle(
+            fontFamily = family,
+            fontWeight = FontWeight.Medium,
+            fontSize = 10.sp,
+            lineHeight = 12.sp
+        )
     )
-)
+}
+
+val EzdTypography = buildEzdTypography(AppFontStyle.SYSTEM)
 
 val EzdShapes = Shapes(
     small = RoundedCornerShape(16.dp),
@@ -589,9 +645,11 @@ fun EzdTheme(
     themeStyle: EzdThemeStyle = EzdThemeStyle.AMOLED_OBSIDIAN,
     accentPreset: AccentColorPreset = AccentColorPreset.THEME_DEFAULT,
     blurIntensity: Float = 0.78f,
-    hapticsEnabled: Boolean = true,
     reduceAnimations: Boolean = false,
     animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH,
+    texturePreset: BackgroundTexturePreset = BackgroundTexturePreset.PLAIN,
+    textureOpacity: Float = 0.35f,
+    fontStyle: AppFontStyle = AppFontStyle.SYSTEM,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -606,16 +664,19 @@ fun EzdTheme(
         systemDark = systemDark,
         accentPreset = accentPreset,
         blurIntensity = blurIntensity,
-        hapticsEnabled = hapticsEnabled,
         reduceMotion = prefersReducedMotion,
-        animStyle = animStyle
+        animStyle = animStyle,
+        texturePreset = texturePreset,
+        textureOpacity = textureOpacity,
+        fontStyle = fontStyle
     )
     val colorScheme = buildColorScheme(tokens)
+    val typography = buildEzdTypography(fontStyle)
 
     CompositionLocalProvider(LocalEzdVisuals provides tokens) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = EzdTypography,
+            typography = typography,
             shapes = EzdShapes,
             content = content
         )

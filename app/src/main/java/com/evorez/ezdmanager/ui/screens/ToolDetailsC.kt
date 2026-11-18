@@ -7,6 +7,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -30,6 +31,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.root.RootShellManager
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.*
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
@@ -78,11 +80,22 @@ fun ZramVmPanel(state: EzdUiState, vm: EzdViewModel) {
                     Text(
                         text = if (zv.zramSupported) {
                             "${zv.diskSizeMb} MB · ${zv.currentAlgorithm} · Used ${zv.usedMemMb} MB (Orig ${zv.origDataMb} MB)"
-                        } else zv.statusNote,
+                        } else {
+                            "${zv.probeResult?.shortTag() ?: "Pending"}: ${zv.statusNote}"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = JetBrainsMono,
                         color = visuals.accent
                     )
+                    if (!zv.zramSupported && zv.pathsTried.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "Paths tried: ${zv.pathsTried.joinToString(", ")}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = JetBrainsMono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 IconButton(onClick = { vm.refreshZramVm() }) {
                     Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ZRAM")
@@ -241,11 +254,32 @@ fun KernelTweaksPanel(state: EzdUiState, vm: EzdViewModel) {
             }
             Spacer(Modifier.height(6.dp))
             if (k.blockDevices.isEmpty()) {
-                Text(
-                    text = "No accessible /sys/block/*/queue nodes detected yet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = k.ioStatusNote.ifBlank { "Waiting for /sys/block/*/queue probe…" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusPill(
+                            label = k.ioProbeResult?.shortTag() ?: "Probing",
+                            accent = visuals.warningColor
+                        )
+                    }
+                    if (k.ioPathsTried.isNotEmpty()) {
+                        Text(
+                            text = "Paths tried: ${k.ioPathsTried.joinToString(", ")}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = JetBrainsMono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             } else {
                 k.blockDevices.forEach { dev ->
                     Surface(
@@ -253,7 +287,7 @@ fun KernelTweaksPanel(state: EzdUiState, vm: EzdViewModel) {
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
                         shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                        color = visuals.solidSurfaceElevated,
                         border = BorderStroke(1.dp, visuals.glassBorder)
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -315,11 +349,14 @@ fun KernelTweaksPanel(state: EzdUiState, vm: EzdViewModel) {
                             vm.applyThermalProfile(mode)
                         },
                     shape = RoundedCornerShape(16.dp),
-                    color = if (selected) visuals.accent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                    color = visuals.solidSurfaceElevated,
                     border = BorderStroke(1.dp, if (selected) visuals.accent else visuals.glassBorder)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (selected) visuals.accent.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -380,11 +417,14 @@ fun KernelTweaksPanel(state: EzdUiState, vm: EzdViewModel) {
                             vm.setGpuRenderer(mode)
                         },
                     shape = RoundedCornerShape(16.dp),
-                    color = if (selected) visuals.accent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                    color = visuals.solidSurfaceElevated,
                     border = BorderStroke(1.dp, if (selected) visuals.accent else visuals.glassBorder)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (selected) visuals.accent.copy(alpha = 0.14f) else androidx.compose.ui.graphics.Color.Transparent)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {

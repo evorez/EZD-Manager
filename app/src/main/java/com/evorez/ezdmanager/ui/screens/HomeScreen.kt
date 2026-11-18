@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.profiles.ProfileRepository
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.GlassButton
 import com.evorez.ezdmanager.ui.components.GlassCard
 import com.evorez.ezdmanager.ui.components.GlassDialog
@@ -56,6 +58,9 @@ fun HomeScreen(
     onRequestShizuku: () -> Unit,
     onShowDetails: () -> Unit,
     onApplyProfile: (ProfileConfig) -> Unit,
+    onToggleBeastMode: () -> Unit,
+    onSetBeastThermalLimits: (Float?, Float?) -> Unit,
+    onSetBeastIgnoreThermal: (Boolean) -> Unit,
     onOpenTool: (ToolId) -> Unit,
     onClearSafeMode: () -> Unit,
     onUpdateUserProfile: (String, String, Uri?) -> Unit
@@ -128,18 +133,19 @@ fun HomeScreen(
 
         DeviceOverviewCard(overview = state.overview, onDetailsClick = onShowDetails)
 
-        // Mixed CPU & GPU Unified Live Control Card (Balanced + Boost -> Performance profile)
+        // Mixed CPU & GPU Unified Live Control Card (Balanced + Boost)
         MixedCpuGpuControlCard(
             state = state,
             daemonStats = daemonStats,
-            onOpenEngine = { onOpenTool(ToolId.CPU_GPU_CONTROL) },
             onApplyProfile = onApplyProfile
         )
 
         // Header 2: 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴 (Pushes kernel limits, uncaps limits & locks 100% CPU & GPU)
         BeastModeCard(
             state = state,
-            onApplyProfile = onApplyProfile
+            onToggleBeastMode = onToggleBeastMode,
+            onSetBeastThermalLimits = onSetBeastThermalLimits,
+            onSetBeastIgnoreThermal = onSetBeastIgnoreThermal
         )
 
         // 3 Distinct Mode Toggles: Power Save (GPU 10% / CPU 30%), Balanced (GPU 30% / CPU 50%), Performance (GPU 70% / CPU 70%)
@@ -329,7 +335,6 @@ private fun EditUserProfileDialog(
 private fun MixedCpuGpuControlCard(
     state: EzdUiState,
     daemonStats: DaemonStats,
-    onOpenEngine: () -> Unit,
     onApplyProfile: (ProfileConfig) -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
@@ -344,10 +349,7 @@ private fun MixedCpuGpuControlCard(
     GlassCard(
         cornerRadius = 26.dp,
         highlightBorder = daemonStats.perAppMonitorActive,
-        onClick = onOpenEngine,
-        modifier = Modifier
-            .captureLaunchBounds()
-            .testTag("home_cpu_gpu_card")
+        modifier = Modifier.testTag("home_cpu_gpu_card")
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -359,13 +361,16 @@ private fun MixedCpuGpuControlCard(
                 Column {
                     Text("CPU & GPU Control", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = if (daemonStats.perAppMonitorActive) "Per-App Daemon Active" else "${state.cpuPolicies.size} CPU Clusters · ${gpu.vendorHint}",
+                        text = when {
+                            daemonStats.perAppMonitorActive -> "Per-App Daemon Active"
+                            state.cpuPolicies.isNotEmpty() -> "${state.cpuPolicies.size} CPU Clusters · ${gpu.vendorHint}"
+                            else -> "CPU: ${state.cpuResult.shortTag()} · ${gpu.vendorHint}"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            StatusPill("Open Engine", visuals.accent)
         }
 
         Spacer(Modifier.height(12.dp))
@@ -377,7 +382,7 @@ private fun MixedCpuGpuControlCard(
             Surface(
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(18.dp),
-                color = visuals.glassSurfaceElevated,
+                color = visuals.solidSurfaceElevated,
                 border = BorderStroke(1.dp, visuals.glassBorder)
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -401,7 +406,7 @@ private fun MixedCpuGpuControlCard(
             Surface(
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(18.dp),
-                color = visuals.glassSurfaceElevated,
+                color = visuals.solidSurfaceElevated,
                 border = BorderStroke(1.dp, visuals.glassBorder)
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -443,15 +448,6 @@ private fun MixedCpuGpuControlCard(
                     accent = state.settings.activeProfileId == perfProf.id,
                     modifier = Modifier.weight(1f)
                 )
-            }
-            OutlinedButton(
-                onClick = onOpenEngine,
-                shape = CircleShape,
-                modifier = Modifier
-                    .captureLaunchBounds()
-                    .defaultMinSize(minHeight = 48.dp)
-            ) {
-                Text("Tune")
             }
         }
     }
@@ -589,7 +585,7 @@ private fun QuickActionPill(
             .clip(CircleShape)
             .clickable(onClick = onClick),
         shape = CircleShape,
-        color = visuals.glassSurfaceElevated,
+        color = visuals.solidSurfaceElevated,
         border = BorderStroke(1.dp, visuals.glassBorder)
     ) {
         Row(
@@ -606,13 +602,25 @@ private fun QuickActionPill(
 @Composable
 private fun BeastModeCard(
     state: EzdUiState,
-    onApplyProfile: (ProfileConfig) -> Unit
+    onToggleBeastMode: () -> Unit,
+    onSetBeastThermalLimits: (Float?, Float?) -> Unit,
+    onSetBeastIgnoreThermal: (Boolean) -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
-    val isBeastActive = state.settings.activeProfileId == "beast"
-    val builtIns = remember { ProfileRepository.builtInProfiles() }
-    val beastProfile = builtIns.find { it.id == "beast" } ?: return
-    val balProfile = builtIns.find { it.id == "balanced" } ?: return
+    val isBeastActive = state.settings.activeProfileId == GameProfileId.BEAST.id
+    val peakHz = (state.displayState.peakHardwareHz.takeIf { it > 0f }
+        ?: state.probeReport?.displayPeakRateHz
+        ?: state.displayState.currentRefreshHz).coerceAtLeast(60f)
+    val peakHzLabel = if (peakHz % 1f == 0f) "${peakHz.toInt()}Hz" else String.format(java.util.Locale.US, "%.1fHz", peakHz)
+
+    val thermal = state.thermalTelemetry
+    val batTemp = if (thermal.batteryTempC > 0f) thermal.batteryTempC else state.batteryMonitorStats.temperatureC
+    val socTemp = thermal.socTempC
+    val batLimit = state.settings.beastBatteryTempLimitC
+    val socLimit = state.settings.beastSocTempLimitC
+    val ignoreThermal = state.settings.beastIgnoreThermalLimits
+
+    var showWatchdogSettings by remember { mutableStateOf(false) }
 
     val fieryColor = Color(0xFFFF2A2A)
     val amberGlow = Color(0xFFFF9500)
@@ -635,17 +643,16 @@ private fun BeastModeCard(
             .captureLaunchBounds()
             .testTag("beast_mode_card"),
         shape = RoundedCornerShape(26.dp),
-        color = if (isBeastActive) {
-            fieryColor.copy(alpha = if (visuals.isDark) 0.14f else 0.08f)
-        } else {
-            visuals.glassSurfaceElevated
-        },
+        color = visuals.solidSurfaceElevated,
         border = BorderStroke(if (isBeastActive) 1.8.dp else 1.2.dp, cardBorderBrush),
         shadowElevation = 0.dp
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .background(
+                    if (isBeastActive) fieryColor.copy(alpha = if (visuals.isDark) 0.14f else 0.08f) else Color.Transparent
+                )
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -656,7 +663,8 @@ private fun BeastModeCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -674,7 +682,7 @@ private fun BeastModeCard(
                         }
                     }
                     Column {
-                        // Header 2 as specifically requested: 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴
+                        // Header 2: 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴
                         Text(
                             text = "𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴",
                             style = MaterialTheme.typography.headlineMedium,
@@ -683,7 +691,7 @@ private fun BeastModeCard(
                             letterSpacing = 1.sp
                         )
                         Text(
-                            text = if (isBeastActive) "ACTIVE · 100% CPU & GPU HARD LOCKED" else "Push Kernel Limits · Uncap Overclock",
+                            text = if (isBeastActive) "ACTIVE · Baseline Snapshotted · Watchdog Armed" else "Probe-Locked CPU/GPU · Limiters · I/O · Touch",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (isBeastActive) amberGlow else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold
@@ -698,37 +706,143 @@ private fun BeastModeCard(
             }
 
             Text(
-                text = "Pushes kernel limits, uncaps thermal boundaries, forces all offline CPU cores online, and hard locks ALL CPU clusters and GPU at 100% maximum clock frequency.",
+                text = "Locks CPU clusters & GPU at peak OPP, enables touch boost/gaming mode, disables SoC limiters where exposed, tunes I/O/VM/TCP, and locks $peakHzLabel. Fast charging remains separate.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            // Live status badges
+            // Live status & dynamic peak Hz + live thermal readout
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 StatusPill("CPU: 100%", fieryColor)
                 StatusPill("GPU: 100%", amberGlow)
-                StatusPill("All Cores Online", visuals.accent)
-                StatusPill("120Hz", visuals.successColor)
+                StatusPill(peakHzLabel, visuals.successColor)
+                StatusPill(
+                    label = "Bat ${String.format(java.util.Locale.US, "%.1f°C", batTemp)}",
+                    accent = when {
+                        batTemp >= batLimit -> fieryColor
+                        batTemp >= batLimit - 2.5f -> amberGlow
+                        else -> visuals.successColor
+                    }
+                )
+                StatusPill(
+                    label = if (socTemp != null) "SoC ${String.format(java.util.Locale.US, "%.1f°C", socTemp)}" else "SoC N/A",
+                    accent = when {
+                        socTemp == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                        socTemp >= socLimit -> fieryColor
+                        socTemp >= socLimit - 5f -> amberGlow
+                        else -> visuals.accent
+                    }
+                )
+            }
+
+            // Thermal Safety Watchdog toggle header & controls
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { showWatchdogSettings = !showWatchdogSettings },
+                shape = RoundedCornerShape(16.dp),
+                color = visuals.solidSurfaceBase,
+                border = BorderStroke(1.dp, if (ignoreThermal) fieryColor.copy(alpha = 0.65f) else visuals.glassBorder)
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Thermal Watchdog: Bat ${batLimit.toInt()}°C · SoC ${socLimit.toInt()}°C",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (ignoreThermal) fieryColor else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (ignoreThermal) "BYPASSED — Overheat auto-stepdown OFF" else "Auto-steps down to Balanced if threshold exceeded · Boot Guard ON",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (ignoreThermal) fieryColor else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            imageVector = if (showWatchdogSettings) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = "Configure Watchdog",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = showWatchdogSettings) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            HorizontalDivider()
+                            Text("Battery Limit (°C)", style = MaterialTheme.typography.labelMedium)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(40f, 43f, 45f, 48f).forEach { deg ->
+                                    FilterChip(
+                                        selected = kotlin.math.abs(batLimit - deg) < 0.5f,
+                                        onClick = { onSetBeastThermalLimits(deg, null) },
+                                        label = { Text("${deg.toInt()}°C") },
+                                        shape = CircleShape
+                                    )
+                                }
+                            }
+                            Text("SoC Limit (°C)", style = MaterialTheme.typography.labelMedium)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(70f, 75f, 80f, 85f).forEach { deg ->
+                                    FilterChip(
+                                        selected = kotlin.math.abs(socLimit - deg) < 0.5f,
+                                        onClick = { onSetBeastThermalLimits(null, deg) },
+                                        label = { Text("${deg.toInt()}°C") },
+                                        shape = CircleShape
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Ignore thermal limits", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        text = "Opt-in only (Default OFF). Disables automatic step-down.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = ignoreThermal,
+                                    onCheckedChange = onSetBeastIgnoreThermal,
+                                    modifier = Modifier.testTag("beast_ignore_thermal_switch")
+                                )
+                            }
+                            if (ignoreThermal) {
+                                Text(
+                                    text = "WARNING: Thermal safety step-down is bypassed. Sustained peak clocks above 43°C battery / 75°C SoC can accelerate battery wear and heat.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = fieryColor,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             Button(
-                onClick = {
-                    if (isBeastActive) {
-                        onApplyProfile(balProfile)
-                    } else {
-                        onApplyProfile(beastProfile)
-                    }
-                },
+                onClick = onToggleBeastMode,
+                enabled = !state.busy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = 48.dp)
                     .testTag("beast_mode_toggle_btn"),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isBeastActive) fieryColor else fieryColor.copy(alpha = 0.85f),
+                    containerColor = if (isBeastActive) fieryColor else fieryColor.copy(alpha = 0.88f),
                     contentColor = Color.White
                 )
             ) {
@@ -739,11 +853,68 @@ private fun BeastModeCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (isBeastActive) "DISENGAGE 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴" else "ACTIVATE 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴",
+                    text = if (isBeastActive) "DEACTIVATE" else "ACTIVATE",
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp,
-                    letterSpacing = 0.5.sp
+                    letterSpacing = 0.8.sp
                 )
+            }
+
+            // Per-item Beast Execution Report (read-back verified outcomes)
+            state.beastReport?.let { report ->
+                if (report.items.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = visuals.solidSurfaceBase,
+                        border = BorderStroke(1.dp, visuals.glassBorder)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = report.summary,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = visuals.accent
+                            )
+                            HorizontalDivider()
+                            report.items.forEach { item ->
+                                val statusColor = when (item.status) {
+                                    EngineItemStatus.OK -> visuals.successColor
+                                    EngineItemStatus.FAILED -> fieryColor
+                                    EngineItemStatus.UNSUPPORTED -> amberGlow
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${item.category} · ${item.label}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        StatusPill(label = item.status.name, accent = statusColor)
+                                    }
+                                    Text(
+                                        text = item.reason,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (item.path.isNotBlank()) {
+                                        Text(
+                                            text = item.path,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = JetBrainsMono,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -849,14 +1020,19 @@ private fun ProfileToggleCard(
             .defaultMinSize(minHeight = 84.dp)
             .testTag("profile_toggle_${title.lowercase().replace(" ", "_")}"),
         shape = RoundedCornerShape(18.dp),
-        color = if (isActive) accentColor.copy(alpha = if (visuals.isDark) 0.22f else 0.14f) else visuals.glassSurfaceElevated,
+        color = visuals.solidSurfaceElevated,
         border = BorderStroke(
             width = if (isActive) 1.6.dp else 1.dp,
             color = if (isActive) accentColor else visuals.glassBorder
         )
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    if (isActive) accentColor.copy(alpha = if (visuals.isDark) 0.22f else 0.14f) else Color.Transparent
+                )
+                .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(

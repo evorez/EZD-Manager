@@ -183,42 +183,21 @@ object RootShellManager {
         }
     }
 
-    suspend fun readSysfs(path: String): String? {
-        if (!isValidPath(path)) return null
-        val qPath = shellQuote(path)
-        val res = exec("if [ -r $qPath ]; then cat $qPath 2>/dev/null; fi", timeoutMs = 2_500L)
-        return if (res.success) res.stdoutText.trim().takeIf { it.isNotEmpty() } else null
-    }
+    suspend fun readSysfs(path: String): String? = RootShell.readNode(path)
 
     suspend fun writeAndVerify(path: String, value: String): Pair<Boolean, String?> {
-        if (!isValidPath(path) || value.contains('\u0000') || value.contains('\n')) {
-            return false to "Invalid path or value"
-        }
-        val qPath = shellQuote(path)
-        val qVal = shellQuote(value)
-        val check = exec("[ -e $qPath ] && [ -w $qPath ] && echo OK || echo NO", timeoutMs = 2_500L)
-        if (check.stdout.firstOrNull()?.trim() != "OK") {
-            return false to "Node missing or not writable: $path"
-        }
-        val writeRes = exec("printf '%s' $qVal > $qPath", timeoutMs = 3_000L)
-        val readBack = readSysfs(path)
-        return when {
-            !writeRes.success -> false to (writeRes.stderr.firstOrNull() ?: "Write rejected; read-back: ${readBack ?: "unavailable"}")
-            readBack == null -> false to "Read-back unavailable"
-            readBack != value.trim() -> false to "Kernel clamped/overrode value ($readBack)"
-            else -> true to readBack
+        return when (val r = RootShell.writeAndVerify(path, value)) {
+            is HwResult.Applied -> true to r.readBackValue
+            is HwResult.Rejected -> false to r.reason
+            is HwResult.NotFound -> false to "Not found (tried ${r.pathsTried.joinToString(", ")})"
+            HwResult.PermissionDenied -> false to "Permission denied (root su required)"
+            HwResult.SelinuxBlocked -> false to "SELinux enforcing blocked write to $path"
         }
     }
 
-    fun isValidPath(path: String): Boolean {
-        return path.startsWith("/") && !path.contains("..") && !path.contains('\u0000')
-    }
+    fun isValidPath(path: String): Boolean = RootShell.isValidPath(path)
 
-    fun isValidPropName(prop: String): Boolean {
-        return prop.matches(Regex("^[a-zA-Z0-9._-]+$"))
-    }
+    fun isValidPropName(prop: String): Boolean = RootShell.isValidPropName(prop)
 
-    fun shellQuote(raw: String): String {
-        return "'" + raw.replace("'", "'\\''") + "'"
-    }
+    fun shellQuote(raw: String): String = RootShell.shellQuote(raw)
 }

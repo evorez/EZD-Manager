@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import com.evorez.ezdmanager.data.SettingsDataStore
 import com.evorez.ezdmanager.hardware.RootModulesAndPropRepository
+import com.evorez.ezdmanager.model.GameProfileId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -22,7 +23,22 @@ class BootMemoryReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val store = SettingsDataStore(appCtx)
-                val settings = store.settingsFlow.first()
+                var settings = store.settingsFlow.first()
+
+                // Beast Mode Boot Guard: never leave Beast Mode active across a device reboot
+                var beastDisabledAtBoot = false
+                if (settings.activeProfileId == GameProfileId.BEAST.id) {
+                    store.setActiveProfileId(GameProfileId.BALANCED.id)
+                    beastDisabledAtBoot = true
+                }
+                if (settings.bootMemory.savedProfileId == GameProfileId.BEAST.id) {
+                    store.saveBootMemory(settings.bootMemory.copy(savedProfileId = GameProfileId.BALANCED.id))
+                    beastDisabledAtBoot = true
+                }
+                if (beastDisabledAtBoot) {
+                    settings = store.settingsFlow.first()
+                }
+
                 val shouldApplyTweaks = settings.bootMemory.applyOnBoot
 
                 if (shouldApplyTweaks) {
@@ -43,10 +59,14 @@ class BootMemoryReceiver : BroadcastReceiver() {
                     }
                 }
 
-                if (shouldApplyTweaks || settings.daemonEnabled) {
+                if (shouldApplyTweaks || settings.daemonEnabled || beastDisabledAtBoot) {
                     val svcIntent = Intent(appCtx, RootDaemonService::class.java).apply {
-                        if (shouldApplyTweaks) {
-                            this.action = RootDaemonService.ACTION_APPLY_BOOT_MEMORY
+                        when {
+                            shouldApplyTweaks -> this.action = RootDaemonService.ACTION_APPLY_BOOT_MEMORY
+                            beastDisabledAtBoot -> this.action = RootDaemonService.ACTION_BEAST_BOOT_DISABLED_ALERT
+                        }
+                        if (beastDisabledAtBoot) {
+                            putExtra(RootDaemonService.EXTRA_BEAST_BOOT_GUARD, true)
                         }
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

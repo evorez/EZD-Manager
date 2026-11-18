@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.evorez.ezdmanager.model.*
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.GlassCard
 import com.evorez.ezdmanager.ui.components.GlowIcon
 import com.evorez.ezdmanager.ui.components.StatusPill
@@ -56,10 +57,16 @@ fun CpuGpuScreen(
                     GlowIcon(Icons.Rounded.Memory, contentDescription = "CPU & GPU", tint = visuals.accent, size = 26.dp)
                     Column {
                         Text("Unified CPU & GPU Engine", style = MaterialTheme.typography.titleLarge)
-                        val cpuStr = state.overview.cpuUsagePercent?.let { "CPU $it%" } ?: "CPU ${state.cpuPolicies.size} clusters"
+                        val cpuStr = when {
+                            state.overview.cpuUsagePercent != null -> "CPU ${state.overview.cpuUsagePercent}%"
+                            state.cpuPolicies.isNotEmpty() -> "CPU ${state.cpuPolicies.size} clusters"
+                            else -> "CPU ${state.cpuResult.shortTag()}"
+                        }
                         val gpuStr = if (state.gpuState.supported) {
                             "GPU ${state.gpuState.currentMhz ?: "?"} MHz (${state.gpuState.usagePercent ?: 0}%)"
-                        } else "GPU read-only"
+                        } else {
+                            "GPU ${state.gpuState.probeResult?.shortTag() ?: "Probing"}"
+                        }
                         Text(
                             text = "$cpuStr · $gpuStr",
                             style = MaterialTheme.typography.bodySmall,

@@ -258,11 +258,13 @@ class SystemToolsRepository(private val context: Context) {
         }
     }
 
-    // --- Audio Enhancer (Phase 8: Genuine Hz bands + independent Bass Enhancer) ---
+    // --- Audio Enhancer (Phase 8: Genuine Hz bands + independent Bass Enhancer + Increase Loudness) ---
     fun initAudioEngine(
         savedPreset: String = "Dynamic",
         bassEnabled: Boolean = true,
         eqEnabled: Boolean = true,
+        increaseLoudnessEnabled: Boolean = false,
+        loudnessGainMb: Int = 600,
         visualStyle: AudioVisualStyle = AudioVisualStyle.BASS_PULSE,
         bassFocus: String = "Punch 60Hz"
     ): AudioState {
@@ -278,13 +280,15 @@ class SystemToolsRepository(private val context: Context) {
             bassBoost = runCatching { BassBoost(0, 0).apply { enabled = bassEnabled } }.getOrNull()
         }
         if (hasLoud && loudnessEnhancer == null) {
-            loudnessEnhancer = runCatching { LoudnessEnhancer(0).apply { enabled = eqEnabled } }.getOrNull()
+            loudnessEnhancer = runCatching { LoudnessEnhancer(0).apply { enabled = increaseLoudnessEnabled } }.getOrNull()
         }
 
         val eq = equalizer
         val bb = bassBoost
+        val le = loudnessEnhancer
         val eqReady = eq != null
         val bassReady = bb != null
+        val loudReady = le != null
 
         val count = if (eq != null) eq.numberOfBands.toInt().coerceIn(1, 10) else 5
         val freqs = if (eq != null) {
@@ -299,6 +303,7 @@ class SystemToolsRepository(private val context: Context) {
         }
 
         val note = when {
+            eqReady && bassReady && loudReady -> "Hardware EQ (${count} bands), BassBoost & Loudness DSP attached"
             eqReady && bassReady -> "Hardware Equalizer (${count} bands) & BassBoost DSP attached"
             bassReady -> "Hardware BassBoost DSP active (Equalizer session unavailable)"
             eqReady -> "Hardware Equalizer (${count} bands) active"
@@ -309,14 +314,16 @@ class SystemToolsRepository(private val context: Context) {
             activePreset = savedPreset,
             bassEnabled = bassEnabled,
             equalizerEnabled = eqEnabled,
+            increaseLoudnessEnabled = increaseLoudnessEnabled,
             bassStrength = bb?.roundedStrength?.toInt() ?: 420,
             bassFrequencyFocus = bassFocus,
-            loudnessGainMb = 150,
+            loudnessGainMb = loudnessGainMb.coerceIn(0, 2400),
             visualStyle = visualStyle,
             bandLevels = levels,
             bandsHz = freqs,
             engineReady = eqReady,
             bassEngineReady = bassReady,
+            loudnessEngineReady = loudReady,
             statusNote = note
         )
         return applyAudioPreset(savedPreset, baseState)
@@ -344,12 +351,6 @@ class SystemToolsRepository(private val context: Context) {
             "Vocal" -> 180
             else -> 0
         }
-        val loud = when (presetName) {
-            "Gaming" -> 500
-            "Dynamic" -> 350
-            "Bass" -> 280
-            else -> 150
-        }
         val suggestedStyle = when (presetName) {
             "Bass" -> AudioVisualStyle.BASS_PULSE
             "Vocal", "Music" -> AudioVisualStyle.SILK_WAVE
@@ -359,16 +360,16 @@ class SystemToolsRepository(private val context: Context) {
         applyAudioParams(
             levels = mappedLevels,
             bassStrength = bass,
-            loudnessMb = loud,
+            loudnessMb = current.loudnessGainMb,
             bassEnabled = current.bassEnabled,
             eqEnabled = current.equalizerEnabled,
+            increaseLoudnessEnabled = current.increaseLoudnessEnabled,
             bassFocus = current.bassFrequencyFocus
         )
         return current.copy(
             activePreset = presetName,
             bandLevels = mappedLevels,
             bassStrength = bass,
-            loudnessGainMb = loud,
             visualStyle = suggestedStyle
         )
     }
@@ -379,6 +380,7 @@ class SystemToolsRepository(private val context: Context) {
         loudnessMb: Int,
         bassEnabled: Boolean = true,
         eqEnabled: Boolean = true,
+        increaseLoudnessEnabled: Boolean = false,
         bassFocus: String = "Punch 60Hz"
     ) {
         runCatching {
@@ -408,9 +410,11 @@ class SystemToolsRepository(private val context: Context) {
                 }
             }
             loudnessEnhancer?.let { le ->
-                le.enabled = eqEnabled
-                if (eqEnabled) {
-                    le.setTargetGain(loudnessMb.coerceIn(0, 1200))
+                le.enabled = increaseLoudnessEnabled
+                if (increaseLoudnessEnabled) {
+                    le.setTargetGain(loudnessMb.coerceIn(0, 2400))
+                } else {
+                    le.setTargetGain(0)
                 }
             }
         }

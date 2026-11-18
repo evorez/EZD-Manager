@@ -2,7 +2,10 @@ package com.evorez.ezdmanager.ui.components
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Build
@@ -43,6 +46,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -61,15 +65,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import com.evorez.ezdmanager.R
+import com.evorez.ezdmanager.model.BackgroundTexturePreset
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Random
 import kotlin.math.hypot
-
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 
 object ColorOsMotion {
     val FluidEaseOut = CubicBezierEasing(0.22f, 1.0f, 0.36f, 1.0f)
@@ -84,19 +86,6 @@ object ColorOsMotion {
         dampingRatio = 0.82f,
         stiffness = 480f
     )
-}
-
-@Composable
-fun rememberEzdHaptic(): () -> Unit {
-    val visuals = LocalEzdVisuals.current
-    val haptic = LocalHapticFeedback.current
-    return remember(visuals.hapticsEnabled, haptic) {
-        {
-            if (visuals.hapticsEnabled) {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            }
-        }
-    }
 }
 
 /**
@@ -208,14 +197,9 @@ fun CircularLaunchReveal(
         label = "circularRevealProgress"
     )
     val scale by animateFloatAsState(
-        targetValue = if (revealed) 1f else 0.92f,
+        targetValue = if (revealed) 1f else 0.94f,
         animationSpec = ColorOsMotion.fluidSpring(),
         label = "circularLaunchScale"
-    )
-    val alpha by animateFloatAsState(
-        targetValue = if (revealed) 1f else 0.35f,
-        animationSpec = tween(220, easing = ColorOsMotion.FluidEaseOut),
-        label = "circularLaunchAlpha"
     )
 
     Box(
@@ -223,7 +207,7 @@ fun CircularLaunchReveal(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-                this.alpha = alpha
+                alpha = 1f
                 if (progress < 0.995f) {
                     shape = circleRevealShape(progress, originFraction)
                     clip = true
@@ -234,12 +218,161 @@ fun CircularLaunchReveal(
     }
 }
 
+private object ProceduralTextureCache {
+    private val cache = mutableMapOf<String, ShaderBrush>()
+
+    fun getBrush(preset: BackgroundTexturePreset, isDark: Boolean): ShaderBrush? {
+        if (preset == BackgroundTexturePreset.PLAIN) return null
+        val key = "${preset.name}_$isDark"
+        cache[key]?.let { return it }
+
+        val size = 256
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val rng = Random(preset.ordinal * 9187L + if (isDark) 31L else 7L)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        when (preset) {
+            BackgroundTexturePreset.PAPER -> {
+                // Soft tactile paper base tint + cross-hatched cotton fibers & micro-specks
+                canvas.drawColor(
+                    if (isDark) android.graphics.Color.argb(38, 210, 198, 178)
+                    else android.graphics.Color.argb(120, 234, 224, 206)
+                )
+                for (i in 0 until 900) {
+                    val x = rng.nextFloat() * size
+                    val y = rng.nextFloat() * size
+                    val len = 6f + rng.nextFloat() * 14f
+                    val angle = rng.nextFloat() * Math.PI * 2.0
+                    val dx = (kotlin.math.cos(angle) * len).toFloat()
+                    val dy = (kotlin.math.sin(angle) * len).toFloat()
+                    val warm = rng.nextBoolean()
+                    paint.strokeWidth = 0.8f + rng.nextFloat() * 0.9f
+                    paint.color = when {
+                        isDark && warm -> android.graphics.Color.argb(24, 235, 220, 195)
+                        isDark -> android.graphics.Color.argb(26, 20, 16, 12)
+                        warm -> android.graphics.Color.argb(46, 176, 152, 120)
+                        else -> android.graphics.Color.argb(42, 255, 250, 240)
+                    }
+                    // Wrap tile seams for seamless repeating
+                    for (ox in listOf(-size, 0, size)) {
+                        for (oy in listOf(-size, 0, size)) {
+                            if (x + ox in -20f..(size + 20f) && y + oy in -20f..(size + 20f)) {
+                                canvas.drawLine(x + ox, y + oy, x + ox + dx, y + oy + dy, paint)
+                            }
+                        }
+                    }
+                }
+                for (i in 0 until 650) {
+                    paint.color = if (isDark) {
+                        android.graphics.Color.argb(22, 240, 230, 210)
+                    } else {
+                        android.graphics.Color.argb(34, 145, 124, 96)
+                    }
+                    canvas.drawCircle(rng.nextFloat() * size, rng.nextFloat() * size, 0.7f + rng.nextFloat() * 0.9f, paint)
+                }
+            }
+
+            BackgroundTexturePreset.MOON -> {
+                // Lunar basalt dust + subtle overlapping circular craters
+                canvas.drawColor(
+                    if (isDark) android.graphics.Color.argb(32, 140, 155, 185)
+                    else android.graphics.Color.argb(110, 210, 216, 226)
+                )
+                for (i in 0 until 26) {
+                    val cx = rng.nextFloat() * size
+                    val cy = rng.nextFloat() * size
+                    val r = 10f + rng.nextFloat() * 26f
+                    for (ox in listOf(-size, 0, size)) {
+                        for (oy in listOf(-size, 0, size)) {
+                            val px = cx + ox
+                            val py = cy + oy
+                            if (px + r >= -4f && px - r <= size + 4f && py + r >= -4f && py - r <= size + 4f) {
+                                paint.style = Paint.Style.FILL
+                                paint.color = if (isDark) {
+                                    android.graphics.Color.argb(20, 12, 16, 28)
+                                } else {
+                                    android.graphics.Color.argb(34, 150, 160, 178)
+                                }
+                                canvas.drawCircle(px, py, r, paint)
+
+                                paint.style = Paint.Style.STROKE
+                                paint.strokeWidth = 1.4f
+                                paint.color = if (isDark) {
+                                    android.graphics.Color.argb(28, 210, 222, 245)
+                                } else {
+                                    android.graphics.Color.argb(46, 248, 250, 255)
+                                }
+                                canvas.drawCircle(px - 1f, py - 1f, r, paint)
+                            }
+                        }
+                    }
+                }
+                paint.style = Paint.Style.FILL
+                for (i in 0 until 950) {
+                    paint.color = if (isDark) {
+                        android.graphics.Color.argb(26, 220, 230, 255)
+                    } else {
+                        android.graphics.Color.argb(36, 118, 128, 145)
+                    }
+                    canvas.drawCircle(rng.nextFloat() * size, rng.nextFloat() * size, 0.7f + rng.nextFloat() * 1.1f, paint)
+                }
+            }
+
+            BackgroundTexturePreset.SILVER -> {
+                // Fine brushed anodized silver metallic grain
+                canvas.drawColor(
+                    if (isDark) android.graphics.Color.argb(34, 175, 186, 204)
+                    else android.graphics.Color.argb(120, 216, 222, 230)
+                )
+                for (y in 0 until size) {
+                    val wave = kotlin.math.sin(y * 0.14).toFloat() * 0.5f + 0.5f
+                    val alpha = if (isDark) (10 + (wave * 18).toInt()) else (18 + (wave * 32).toInt())
+                    paint.strokeWidth = 1f
+                    paint.color = if (isDark) {
+                        android.graphics.Color.argb(alpha, 215, 224, 240)
+                    } else {
+                        android.graphics.Color.argb(alpha, 152, 162, 176)
+                    }
+                    canvas.drawLine(0f, y.toFloat(), size.toFloat(), y.toFloat(), paint)
+                }
+                for (i in 0 until 750) {
+                    val x = rng.nextFloat() * size
+                    val y = rng.nextFloat() * size
+                    val len = 18f + rng.nextFloat() * 44f
+                    paint.strokeWidth = 0.8f
+                    paint.color = if (isDark) {
+                        android.graphics.Color.argb(24, 255, 255, 255)
+                    } else {
+                        android.graphics.Color.argb(44, 255, 255, 255)
+                    }
+                    canvas.drawLine(x, y, x + len, y + 0.8f, paint)
+                    if (x + len > size) {
+                        canvas.drawLine(x - size, y, x - size + len, y + 0.8f, paint)
+                    }
+                }
+            }
+
+            BackgroundTexturePreset.PLAIN -> Unit
+        }
+
+        val shader = BitmapShader(bmp, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+        val brush = ShaderBrush(shader)
+        cache[key] = brush
+        return brush
+    }
+}
+
 @Composable
 fun EzdAmbientBackground(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
+    val textureBrush = remember(visuals.texturePreset, visuals.isDark) {
+        ProceduralTextureCache.getBrush(visuals.texturePreset, visuals.isDark)
+    }
+
     Box(
         modifier = modifier.drawBehind {
             drawRect(color = visuals.bgBase)
@@ -259,6 +392,12 @@ fun EzdAmbientBackground(
                     )
                 )
             }
+            if (textureBrush != null && visuals.textureOpacity > 0.01f) {
+                drawRect(
+                    brush = textureBrush,
+                    alpha = visuals.textureOpacity.coerceIn(0f, 1f)
+                )
+            }
         }
     ) {
         content()
@@ -274,7 +413,6 @@ fun GlassSurface(
     content: @Composable BoxScope.() -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
-    val performHaptic = rememberEzdHaptic()
     val shape = RoundedCornerShape(cornerRadius)
     val borderColor = if (highlightBorder) visuals.accent.copy(alpha = 0.52f) else visuals.glassBorder
     val interactionSource = remember { MutableInteractionSource() }
@@ -284,14 +422,14 @@ fun GlassSurface(
         1f
     } else {
         animateFloatAsState(
-            targetValue = if (pressed) 0.96f else 1f,
+            targetValue = if (pressed) 0.97f else 1f,
             animationSpec = tween(durationMillis = 100, easing = ColorOsMotion.IosNavigationEasing),
             label = "glassPressScale"
         ).value
     }
 
-    val glassGradientBrush = remember(visuals.gradientsAllowed, visuals.glassSurfaceElevated, visuals.glassSurface) {
-        if (visuals.gradientsAllowed) {
+    val glassGradientBrush = remember(visuals.gradientsAllowed, visuals.glassSurfaceElevated, visuals.glassSurface, visuals.isDark) {
+        if (visuals.gradientsAllowed && visuals.isDark) {
             Brush.linearGradient(
                 colors = listOf(
                     visuals.glassSurfaceElevated.copy(alpha = 0.40f),
@@ -308,7 +446,6 @@ fun GlassSurface(
                     Modifier.graphicsLayer {
                         scaleX = pressScale
                         scaleY = pressScale
-                        compositingStrategy = CompositingStrategy.Offscreen
                     }
                 } else Modifier
             )
@@ -318,25 +455,27 @@ fun GlassSurface(
                     Modifier.clickable(
                         interactionSource = interactionSource,
                         indication = androidx.compose.foundation.LocalIndication.current,
-                        onClick = {
-                            performHaptic()
-                            onClick()
-                        }
+                        onClick = onClick
                     )
                 } else Modifier
             ),
         shape = shape,
-        color = visuals.glassSurface,
+        // Solid opaque surface backing underneath prevents transparency glitches across back navigation or light mode
+        color = if (visuals.isDark) visuals.solidSurfaceBase else visuals.solidSurfaceElevated,
         border = BorderStroke(if (highlightBorder) 1.2.dp else 1.dp, borderColor),
         tonalElevation = 0.dp,
-        shadowElevation = if (visuals.isDark || visuals.isLiteMode) 0.dp else 2.dp
+        shadowElevation = if (visuals.isDark || visuals.isLiteMode) 0.dp else 3.dp
     ) {
         Box(
-            modifier = Modifier.then(
-                if (glassGradientBrush != null) {
-                    Modifier.background(glassGradientBrush)
-                } else Modifier
-            ),
+            modifier = Modifier
+                .then(
+                    if (visuals.isDark) Modifier.background(visuals.glassSurface) else Modifier
+                )
+                .then(
+                    if (glassGradientBrush != null) {
+                        Modifier.background(glassGradientBrush)
+                    } else Modifier
+                ),
             content = content
         )
     }
@@ -410,16 +549,12 @@ fun GlassButton(
     accent: Boolean = true
 ) {
     val visuals = LocalEzdVisuals.current
-    val performHaptic = rememberEzdHaptic()
     val onAccent = if (visuals.isDark &&
         (visuals.accent.red * 0.299f + visuals.accent.green * 0.587f + visuals.accent.blue * 0.114f) > 0.65f
     ) Color(0xFF0B0E14) else Color.White
 
     Button(
-        onClick = {
-            performHaptic()
-            onClick()
-        },
+        onClick = onClick,
         enabled = enabled,
         shape = CircleShape,
         colors = if (accent) {
@@ -484,7 +619,7 @@ fun GlassDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(28.dp),
-        containerColor = if (visuals.isLiteMode) visuals.glassSurfaceElevated else MaterialTheme.colorScheme.surfaceVariant,
+        containerColor = visuals.solidSurfaceElevated,
         titleContentColor = MaterialTheme.colorScheme.onSurface,
         textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text(title, style = MaterialTheme.typography.titleLarge) },
@@ -514,7 +649,7 @@ fun GlassBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = if (visuals.isLiteMode) visuals.glassSurfaceElevated else MaterialTheme.colorScheme.surfaceVariant,
+        containerColor = visuals.solidSurfaceElevated,
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Column(

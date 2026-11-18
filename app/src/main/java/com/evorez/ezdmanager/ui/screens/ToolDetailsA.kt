@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.evorez.ezdmanager.hardware.SystemToolsRepository
@@ -20,6 +21,7 @@ import com.evorez.ezdmanager.model.BatteryMonitorStats
 import com.evorez.ezdmanager.model.DnsPreset
 import com.evorez.ezdmanager.model.PrivilegeMode
 import com.evorez.ezdmanager.model.RootStatus
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.*
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
@@ -381,7 +383,7 @@ fun NetworkPanel(state: EzdUiState, vm: EzdViewModel) {
                         .fillMaxWidth()
                         .padding(vertical = 4.dp),
                     shape = RoundedCornerShape(18.dp),
-                    color = if (selected) visuals.subtleRedAccent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    color = if (selected) visuals.subtleRedAccent.copy(alpha = 0.14f) else visuals.solidSurfaceElevated,
                     border = BorderStroke(1.dp, if (selected) visuals.subtleRedAccent else visuals.glassBorder),
                     onClick = { vm.applyDnsPreset(preset) }
                 ) {
@@ -517,7 +519,47 @@ fun AudioEnhancerPanel(state: EzdUiState, vm: EzdViewModel) {
             }
         }
 
-        // 3. Sound Profile Presets & Equalizer Bands
+        // 3. Dedicated Increase Loudness Boost (works independently of Equalizer)
+        GlassCard(cornerRadius = 24.dp, highlightBorder = audio.increaseLoudnessEnabled) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Increase Loudness", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = if (audio.loudnessEngineReady) {
+                            "Independent LoudnessEnhancer (+${String.format(Locale.US, "%.1f", audio.loudnessGainMb / 100f)} dB)"
+                        } else {
+                            "Hardware LoudnessEnhancer DSP not exposed on this session"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (audio.increaseLoudnessEnabled) visuals.accent else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = audio.increaseLoudnessEnabled,
+                    onCheckedChange = { vm.toggleIncreaseLoudness(it) },
+                    modifier = Modifier.testTag("audio_increase_loudness_switch")
+                )
+            }
+            if (audio.increaseLoudnessEnabled) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "Gain Boost (+${audio.loudnessGainMb} mB / +${String.format(Locale.US, "%.1f", audio.loudnessGainMb / 100f)} dB)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontFamily = JetBrainsMono
+                )
+                GlassSlider(
+                    value = audio.loudnessGainMb.toFloat(),
+                    onValueChange = { vm.updateAudioManual(audio.bandLevels, audio.bassStrength, it.roundToInt()) },
+                    valueRange = 0f..2400f
+                )
+            }
+        }
+
+        // 4. Sound Profile Presets & Equalizer Bands
         GlassCard(cornerRadius = 24.dp, highlightBorder = audio.equalizerEnabled) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -525,7 +567,7 @@ fun AudioEnhancerPanel(state: EzdUiState, vm: EzdViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Equalizer & Loudness", style = MaterialTheme.typography.titleMedium)
+                    Text("Equalizer & Presets", style = MaterialTheme.typography.titleMedium)
                     Text("Active Curve: ${audio.activePreset}", style = MaterialTheme.typography.bodySmall, color = visuals.accent)
                 }
                 Switch(
@@ -547,12 +589,6 @@ fun AudioEnhancerPanel(state: EzdUiState, vm: EzdViewModel) {
 
             if (audio.equalizerEnabled) {
                 Spacer(Modifier.height(10.dp))
-                Text("Loudness Enhancer (+${audio.loudnessGainMb} mB)", style = MaterialTheme.typography.titleSmall, fontFamily = JetBrainsMono)
-                GlassSlider(
-                    value = audio.loudnessGainMb.toFloat(),
-                    onValueChange = { vm.updateAudioManual(audio.bandLevels, audio.bassStrength, it.roundToInt()) },
-                    valueRange = 0f..1200f
-                )
                 audio.bandsHz.forEachIndexed { idx, hz ->
                     val lvl = audio.bandLevels.getOrElse(idx) { 0 }
                     val labelHz = if (hz >= 1000) "${String.format(Locale.US, "%.1f", hz / 1000f)} kHz" else "$hz Hz"
@@ -827,5 +863,161 @@ private fun formatDurationMs(ms: Long): String {
         hrs > 0 -> "${hrs}h ${mins}m"
         mins > 0 -> "${mins}m ${secs}s"
         else -> "${secs}s"
+    }
+}
+
+@Composable
+fun FastChargePanel(state: EzdUiState, vm: EzdViewModel) {
+    val visuals = LocalEzdVisuals.current
+    val fc = state.fastChargeState
+    val rootGranted = state.effectivePrivilegeMode == PrivilegeMode.ROOT
+    val accentTint = if (fc.isCharging) visuals.successColor else visuals.accent
+    var showPaths by remember { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Live Wattage & Current / Voltage Card
+        GlassCard(cornerRadius = 26.dp, highlightBorder = true) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GlowIcon(
+                        icon = Icons.Rounded.Bolt,
+                        contentDescription = "Fast Charge Telemetry",
+                        tint = accentTint,
+                        size = 24.dp
+                    )
+                    Column {
+                        Text("Dedicated Fast Charge", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "${fc.chargeSource} · ${fc.chargeType} · Separate from Beast Mode",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = accentTint
+                        )
+                    }
+                }
+                TextButton(onClick = { vm.refreshFastCharge() }) { Text("Refresh") }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BatteryMetricTile(
+                    label = "LIVE POWER",
+                    value = "${String.format(Locale.US, "%.2f", fc.powerWatts)} W",
+                    sub = if (fc.isCharging) "Charging active" else "Discharging",
+                    accent = accentTint,
+                    modifier = Modifier.weight(1f)
+                )
+                BatteryMetricTile(
+                    label = "CURRENT",
+                    value = "${fc.currentMa} mA",
+                    sub = "${fc.voltageMv} mV",
+                    accent = visuals.accent,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Active Current Limit: ${fc.activeLimitMa?.let { "$it mA" } ?: "Not exposed"}",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontFamily = JetBrainsMono
+                )
+                fc.probeResult?.let { res ->
+                    StatusPill(
+                        label = res.shortTag(),
+                        accent = if (fc.writableNodes.isNotEmpty()) visuals.successColor else visuals.warningColor
+                    )
+                }
+            }
+        }
+
+        // Current-Limit Controls or Clear Unsupported Diagnostics
+        GlassCard(cornerRadius = 24.dp) {
+            Text("Kernel Current-Limit Controls", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = fc.reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (rootGranted && fc.writableNodes.isNotEmpty() && fc.currentLimitPath != null) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "Writable node: ${fc.currentLimitPath}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = visuals.accent
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(1500, 2400, 3300, 4500, 5000).forEach { limitMa ->
+                        FilterChip(
+                            selected = fc.activeLimitMa == limitMa,
+                            onClick = { vm.applyFastChargeLimit(limitMa) },
+                            enabled = !state.busy,
+                            label = { Text("${limitMa} mA") },
+                            shape = CircleShape,
+                            modifier = Modifier.testTag("fast_charge_limit_${limitMa}")
+                        )
+                    }
+                }
+            }
+
+            if (rootGranted && fc.forceFastChargePath != null && fc.forceFastChargePath in fc.writableNodes) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Force Fast Charge Switch", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = fc.forceFastChargePath,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = JetBrainsMono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = fc.forceFastChargeEnabled,
+                        onCheckedChange = { vm.toggleForceFastCharge(it) },
+                        enabled = !state.busy,
+                        modifier = Modifier.testTag("force_fast_charge_switch")
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = { showPaths = !showPaths }) {
+                Text(if (showPaths) "Hide Probed Paths (${fc.pathsTried.size})" else "Show Probed Paths (${fc.pathsTried.size})")
+            }
+            if (showPaths) {
+                if (fc.existingNodes.isNotEmpty()) {
+                    Text("Existing nodes:", style = MaterialTheme.typography.labelMedium)
+                    fc.existingNodes.forEach { p ->
+                        Text("• $p", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMono, color = visuals.accent)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Text("Candidate paths tried:", style = MaterialTheme.typography.labelMedium)
+                fc.pathsTried.forEach { p ->
+                    Text("• $p", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMono, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
     }
 }

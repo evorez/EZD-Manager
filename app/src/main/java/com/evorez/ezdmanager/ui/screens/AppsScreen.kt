@@ -334,7 +334,7 @@ private fun PerAppDetailSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
-        containerColor = if (visuals.isLiteMode) visuals.glassSurfaceElevated else MaterialTheme.colorScheme.surfaceVariant,
+        containerColor = visuals.solidSurfaceElevated,
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Column(

@@ -1,27 +1,43 @@
 package com.evorez.ezdmanager.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.evorez.ezdmanager.backup.BackupExportOptions
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.profiles.ProfileRepository
@@ -30,6 +46,7 @@ import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
 import com.evorez.ezdmanager.viewmodel.EzdUiState
 import com.evorez.ezdmanager.viewmodel.EzdViewModel
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -309,6 +326,7 @@ fun ProfilesPanel(state: EzdUiState, vm: EzdViewModel) {
 @Composable
 fun EzdBackupPanel(state: EzdUiState, vm: EzdViewModel) {
     val visuals = LocalEzdVisuals.current
+    LaunchedEffect(Unit) { vm.refreshSavedEzdBackups() }
     var passphrase by remember { mutableStateOf("") }
     var showPassphrase by remember { mutableStateOf(false) }
 
@@ -379,23 +397,88 @@ fun EzdBackupPanel(state: EzdUiState, vm: EzdViewModel) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             GlassButton(
-                text = "Backup EZD",
+                text = "Save Backup",
                 icon = Icons.Rounded.UploadFile,
                 onClick = {
-                    val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-                    exportLauncher.launch("ezd_manager_$stamp.ezdcfg.json")
+                    vm.exportEncryptedBackupToDownloads(
+                        BackupExportOptions(
+                            includeEzdConfig = true,
+                            selectedApps = emptySet(),
+                            includeMessagesAndCallLogs = false,
+                            includeNetworkConfig = includeNetworkConfig,
+                            includeBluetoothConfig = false,
+                            includeRootBaselines = includeRootBaselines,
+                            passphrase = passphrase
+                        )
+                    )
                 },
                 enabled = !state.busy,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("ezd_backup_downloads_btn")
             )
             GlassButton(
-                text = "Restore EZD",
+                text = "Pick File",
                 icon = Icons.Rounded.DownloadForOffline,
                 onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) },
                 enabled = !state.busy,
                 accent = false,
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        OutlinedButton(
+            onClick = {
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                exportLauncher.launch("ezd_backup_$stamp.ezdcfg.json")
+            },
+            enabled = !state.busy,
+            shape = CircleShape,
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+        ) {
+            Text("Save As (Custom Location)…")
+        }
+
+        if (state.savedEzdBackups.isNotEmpty()) {
+            GlassCard(cornerRadius = 24.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Saved in Download/EZD/ (${state.savedEzdBackups.size})", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { vm.refreshSavedEzdBackups() }) { Text("Refresh") }
+                }
+                Spacer(Modifier.height(6.dp))
+                state.savedEzdBackups.take(8).forEach { path ->
+                    val name = File(path).name
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = visuals.solidSurfaceElevated,
+                        border = BorderStroke(1.dp, visuals.glassBorder)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(path, style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMono, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            TextButton(
+                                onClick = { vm.inspectSavedEzdBackup(path, passphrase) },
+                                enabled = !state.busy
+                            ) { Text("Verify") }
+                        }
+                    }
+                }
+            }
         }
 
         state.backupPreview?.let { preview ->
@@ -413,6 +496,9 @@ fun EzdBackupPanel(state: EzdUiState, vm: EzdViewModel) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text("Version ${preview.archiveVersion} · Created ${preview.createdAt}", style = MaterialTheme.typography.bodySmall, fontFamily = JetBrainsMono)
+                if (preview.filePath.isNotBlank()) {
+                    Text("File: ${preview.filePath}", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMono, color = visuals.accent)
+                }
                 Text("Categories: ${preview.categories.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 if (preview.includesEzdConfig) {
@@ -428,6 +514,7 @@ fun EzdBackupPanel(state: EzdUiState, vm: EzdViewModel) {
                     GlassButton(
                         text = "Confirm Restore",
                         onClick = { vm.executeRestore(restoreEzdConfig, restoreNetworkConfig) },
+                        enabled = preview.checksumValid && !state.busy,
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedButton(onClick = { vm.clearBackupDialogs() }, shape = CircleShape) { Text("Dismiss") }
@@ -446,6 +533,7 @@ fun EzdBackupPanel(state: EzdUiState, vm: EzdViewModel) {
 @Composable
 fun AppBackupPanel(state: EzdUiState, vm: EzdViewModel) {
     val visuals = LocalEzdVisuals.current
+    LaunchedEffect(Unit) { vm.refreshLocalAppBackups() }
     var selectedApps by remember { mutableStateOf<Set<String>>(emptySet()) }
     var appFilter by remember { mutableStateOf("") }
 
@@ -469,7 +557,7 @@ fun AppBackupPanel(state: EzdUiState, vm: EzdViewModel) {
             Text("App Package & Data Backup", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Archives Base APK (+ Split APKs), App Data, External Data, OBB & Media into public Download/EZD Manager/Backups (accessible on non-rooted devices too).",
+                text = "Archives Base APK (+ Split APKs), App Data, External Data, OBB & Media into public Download/EZD/ with timestamps (accessible on non-rooted devices too).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -609,7 +697,7 @@ fun AppBackupPanel(state: EzdUiState, vm: EzdViewModel) {
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
                         shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+                        color = visuals.solidSurfaceElevated,
                         border = BorderStroke(1.dp, visuals.glassBorder)
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -688,19 +776,46 @@ private fun PassphraseField(
 private fun BackupReportCard(state: EzdUiState, vm: EzdViewModel) {
     val visuals = LocalEzdVisuals.current
     state.backupReport?.let { rep ->
-        GlassCard(cornerRadius = 24.dp) {
+        GlassCard(cornerRadius = 24.dp, highlightBorder = !rep.success) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Archive Report", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Backup / Restore Result", style = MaterialTheme.typography.titleMedium)
+                    StatusPill(
+                        label = if (rep.success) "SUCCESS" else "FAILED",
+                        accent = if (rep.success) visuals.successColor else MaterialTheme.colorScheme.error
+                    )
+                }
                 TextButton(onClick = { vm.clearBackupDialogs() }) { Text("Clear") }
             }
-            Text(rep.summary, style = MaterialTheme.typography.bodyMedium, color = visuals.accent)
+            Text(
+                text = rep.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (rep.success) visuals.accent else MaterialTheme.colorScheme.error
+            )
+            if (rep.filePath.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "File path: ${rep.filePath}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (!rep.failureReason.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Reason: ${rep.failureReason}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             if (rep.backedUpItems.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
-                Text("Completed:", style = MaterialTheme.typography.labelLarge)
+                Text("Included:", style = MaterialTheme.typography.labelLarge)
                 rep.backedUpItems.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
             }
             if (rep.skippedItems.isNotEmpty()) {
@@ -728,72 +843,342 @@ private fun BackupToggleRow(title: String, subtitle: String, checked: Boolean, o
 }
 
 // ============================================================================
-// 5. ROOT SHELL PANEL
+// 5. ROOT TERMINAL SCREEN (Real root shell console + device specs header)
 // ============================================================================
 
 @Composable
-fun RootTerminalPanel(state: EzdUiState, vm: EzdViewModel) {
+fun RootTerminalPanel(state: EzdUiState, vm: EzdViewModel, modifier: Modifier = Modifier) {
     val visuals = LocalEzdVisuals.current
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
     var command by remember { mutableStateOf("") }
+    var historyCursor by remember { mutableIntStateOf(-1) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val commandHistory = remember(state.terminalHistory) {
+        state.terminalHistory.map { it.command }
+    }
+
+    LaunchedEffect(state.terminalHistory.size) {
+        if (state.terminalHistory.isNotEmpty()) {
+            listState.animateScrollToItem(state.terminalHistory.lastIndex)
+        }
+    }
+
+    val ov = state.overview
+    val kernelShort = state.probeReport?.kernelVersion?.ifBlank { ov.kernelVersion } ?: ov.kernelVersion
+    val promptUser = when (state.effectivePrivilegeMode) {
+        PrivilegeMode.ROOT -> "root"
+        PrivilegeMode.SHIZUKU -> "shell"
+        PrivilegeMode.BASIC -> "user"
+    }
+    val consoleBg = if (visuals.isDark) Color(0xFF070A10) else Color(0xFF0E1420)
+    val consoleText = Color(0xFFE6EDF7)
+    val consolePromptColor = when (state.effectivePrivilegeMode) {
+        PrivilegeMode.ROOT -> Color(0xFF4ADE80)
+        PrivilegeMode.SHIZUKU -> Color(0xFF38BDF8)
+        PrivilegeMode.BASIC -> Color(0xFFFBBF24)
+    }
+
+    fun submitCommand(raw: String) {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return
+        vm.runTerminalCommand(trimmed)
+        command = ""
+        historyCursor = -1
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Fancy Device Specs + Author Header
         GlassCard(cornerRadius = 24.dp, highlightBorder = true) {
-            Text(
-                text = when (state.effectivePrivilegeMode) {
-                    PrivilegeMode.ROOT -> "Root Daemon Shell (uid=0, persistent worker)"
-                    PrivilegeMode.SHIZUKU -> "Shizuku ADB Shell (uid=2000, rootless privileged)"
-                    PrivilegeMode.BASIC -> "Unprivileged sh Shell (Root / Shizuku not granted)"
-                },
-                style = MaterialTheme.typography.titleSmall,
-                color = visuals.subtleRedAccent
-            )
-            Spacer(Modifier.height(6.dp))
             Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                listOf("id", "uname -a", "getprop ro.product.model", "ls /sys/devices/system/cpu/cpufreq", "clear").forEach { quick ->
-                    AssistChip(onClick = { vm.runTerminalCommand(quick) }, label = { Text(quick) }, shape = CircleShape)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = visuals.accent.copy(alpha = 0.18f),
+                        border = BorderStroke(1.dp, visuals.accent.copy(alpha = 0.5f)),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Terminal,
+                                contentDescription = "Root Terminal",
+                                tint = visuals.accent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Column {
+                        Text(
+                            text = "EZD Root Terminal · 𝙴𝚟𝚘𝚛𝚎𝚣🪽",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = when (state.effectivePrivilegeMode) {
+                                PrivilegeMode.ROOT -> "uid=0 (su) · ${state.rootManagerType}"
+                                PrivilegeMode.SHIZUKU -> "uid=2000 (Shizuku ADB)"
+                                PrivilegeMode.BASIC -> "Unprivileged sh · Grant Root for sysfs"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = JetBrainsMono,
+                            color = consolePromptColor
+                        )
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = {
+                            val transcript = state.terminalHistory.joinToString("\n\n") { entry ->
+                                "$promptUser@${ov.device.ifBlank { "android" }}:/ # ${entry.command}\n${entry.output}\n[exit ${entry.exitCode}]"
+                            }
+                            if (transcript.isNotBlank()) {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("EZD Terminal Output", transcript))
+                                Toast.makeText(context, "Terminal output copied", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "No terminal output to copy", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("terminal_copy_output_btn")
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy Output", tint = visuals.accent)
+                    }
+                    IconButton(
+                        onClick = {
+                            vm.runTerminalCommand("clear")
+                            historyCursor = -1
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("terminal_clear_btn")
+                    ) {
+                        Icon(Icons.Rounded.DeleteSweep, contentDescription = "Clear Terminal", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
+
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "Device : ${ov.manufacturer} ${ov.model} (${ov.device})",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "SoC    : ${ov.board} / ${ov.hardware} · Android ${ov.androidVersion} (API ${ov.sdkInt})",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Kernel : ${kernelShort.ifBlank { "Linux" }}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        // Quick command & history helper bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf(
+                "id",
+                "uname -a",
+                "getprop ro.product.model",
+                "ls /sys/devices/system/cpu/cpufreq",
+                "cat /proc/version",
+                "free -m"
+            ).forEach { quick ->
+                AssistChip(
+                    onClick = { submitCommand(quick) },
+                    label = { Text(quick, fontFamily = JetBrainsMono, fontSize = 11.sp) },
+                    shape = CircleShape
+                )
+            }
+        }
+
+        // Scrollable Terminal Output Buffer
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            shape = RoundedCornerShape(22.dp),
+            color = consoleBg,
+            border = BorderStroke(1.dp, visuals.accent.copy(alpha = 0.35f))
+        ) {
+            SelectionContainer {
+                if (state.terminalHistory.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.TopStart
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "$promptUser@${ov.device.ifBlank { "android" }}:/ # _",
+                                fontFamily = JetBrainsMono,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = consolePromptColor
+                            )
+                            Text(
+                                text = "Ready. Enter any shell command below or tap a preset chip.\nOutput scrolls automatically and can be copied with the Copy button above.",
+                                fontFamily = JetBrainsMono,
+                                fontSize = 12.sp,
+                                color = consoleText.copy(alpha = 0.72f)
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(state.terminalHistory, key = { it.id }) { entry ->
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "$promptUser@${ov.device.ifBlank { "android" }}:/ # ${entry.command}",
+                                        fontFamily = JetBrainsMono,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = consolePromptColor,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "exit ${entry.exitCode}",
+                                        fontFamily = JetBrainsMono,
+                                        fontSize = 10.sp,
+                                        color = if (entry.exitCode == 0) Color(0xFF4ADE80) else Color(0xFFF87171)
+                                    )
+                                }
+                                Text(
+                                    text = entry.output,
+                                    fontFamily = JetBrainsMono,
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    color = consoleText
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom Sticky Command Input + History Up/Down Stepper
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = visuals.solidSurfaceElevated,
+            border = BorderStroke(1.dp, visuals.glassBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                IconButton(
+                    onClick = {
+                        if (commandHistory.isNotEmpty()) {
+                            val nextCursor = if (historyCursor == -1) commandHistory.lastIndex else (historyCursor - 1).coerceAtLeast(0)
+                            historyCursor = nextCursor
+                            command = commandHistory[nextCursor]
+                        }
+                    },
+                    enabled = commandHistory.isNotEmpty(),
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("terminal_history_prev")
+                ) {
+                    Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = "Previous Command")
+                }
+
+                IconButton(
+                    onClick = {
+                        if (commandHistory.isNotEmpty() && historyCursor >= 0) {
+                            val nextCursor = historyCursor + 1
+                            if (nextCursor > commandHistory.lastIndex) {
+                                historyCursor = -1
+                                command = ""
+                            } else {
+                                historyCursor = nextCursor
+                                command = commandHistory[nextCursor]
+                            }
+                        }
+                    },
+                    enabled = historyCursor >= 0,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("terminal_history_next")
+                ) {
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Next Command")
+                }
+
                 OutlinedTextField(
                     value = command,
                     onValueChange = { command = it },
-                    placeholder = { Text("Enter shell command…") },
+                    placeholder = { Text("Enter root command…", fontFamily = JetBrainsMono, fontSize = 13.sp) },
+                    textStyle = LocalTextStyle.current.copy(fontFamily = JetBrainsMono, fontSize = 13.sp),
                     singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { submitCommand(command) }),
                     modifier = Modifier
                         .weight(1f)
                         .testTag("terminal_input")
                 )
-                GlassButton(
-                    text = "Run",
-                    onClick = {
-                        vm.runTerminalCommand(command)
-                        command = ""
-                    }
-                )
-            }
-        }
 
-        state.terminalHistory.reversed().forEach { entry ->
-            GlassCard(cornerRadius = 20.dp) {
-                Text(
-                    text = "$ ${entry.command}  [exit ${entry.exitCode}]",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontFamily = JetBrainsMono,
-                    fontWeight = FontWeight.Bold,
-                    color = visuals.subtleRedAccent
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = entry.output,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = JetBrainsMono,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                FilledIconButton(
+                    onClick = { submitCommand(command) },
+                    enabled = command.isNotBlank(),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = visuals.accent,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("terminal_run_btn")
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Execute Command")
+                }
             }
         }
     }
 }
+

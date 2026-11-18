@@ -1,6 +1,7 @@
 package com.evorez.ezdmanager.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -137,11 +138,14 @@ fun PerformanceScreen(
                             .clickable { onApplyProfile(id) }
                             .testTag("perf_tab_profile_$id"),
                         shape = RoundedCornerShape(18.dp),
-                        color = if (selected) visuals.accent.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        color = visuals.solidSurfaceElevated,
                         border = BorderStroke(1.dp, if (selected) visuals.accent else visuals.glassBorder)
                     ) {
                         Column(
-                            modifier = Modifier.padding(vertical = 12.dp, horizontal = 6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(if (selected) visuals.accent.copy(alpha = 0.20f) else Color.Transparent)
+                                .padding(vertical = 12.dp, horizontal = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
@@ -187,7 +191,7 @@ fun PerformanceScreen(
                     .weight(1f)
                     .clickable { onOpenTool(ToolId.ZRAM_VM) },
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                color = visuals.solidSurfaceElevated,
                 border = BorderStroke(1.dp, visuals.glassBorder)
             ) {
                 Row(
@@ -208,7 +212,7 @@ fun PerformanceScreen(
                     .weight(1f)
                     .clickable { onOpenTool(ToolId.KERNEL_TWEAKS) },
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                color = visuals.solidSurfaceElevated,
                 border = BorderStroke(1.dp, visuals.glassBorder)
             ) {
                 Row(

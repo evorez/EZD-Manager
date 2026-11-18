@@ -50,6 +50,7 @@ object WorkModeManager {
         ToolId.NETWORK -> PrivilegeMode.SHIZUKU
         ToolId.AUDIO_ENHANCER -> PrivilegeMode.BASIC
         ToolId.BATTERY_SAVING -> PrivilegeMode.SHIZUKU
+        ToolId.FAST_CHARGE -> PrivilegeMode.ROOT
         ToolId.DEVICE_SPOOF -> PrivilegeMode.ROOT
         ToolId.PROFILES -> PrivilegeMode.BASIC
         ToolId.MODULES -> PrivilegeMode.ROOT

@@ -1,5 +1,7 @@
 package com.evorez.ezdmanager.ui.components
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -11,6 +13,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -23,7 +27,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -508,14 +515,31 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.rotateArcDraw(deg: 
 }
 
 // ============================================================================
-// 4. 5-TAP BRAND LOGO DEVELOPER EASTER EGG DIALOG
+// 4. 7-TAP AUTHOR PROFILE DIALOG (Reporting & Requesting)
 // ============================================================================
 
 @Composable
 fun DeveloperEggDialog(onDismiss: () -> Unit) {
     val visuals = LocalEzdVisuals.current
+    val context = LocalContext.current
+
+    val cookieRotation = if (visuals.reduceMotion || visuals.isLiteMode) {
+        0f
+    } else {
+        val infiniteTransition = rememberInfiniteTransition(label = "cookieBadgeSpin")
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 16_000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "cookieSpinDeg"
+        ).value
+    }
+
     GlassDialog(
-        title = "Evorez System Secret",
+        title = "Reporting & Requesting",
         onDismiss = onDismiss
     ) {
         Column(
@@ -523,20 +547,89 @@ fun DeveloperEggDialog(onDismiss: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Image(
-                painter = painterResource(R.drawable.evorez_logo_circular),
-                contentDescription = "Evorez Circular Emblem",
-                contentScale = ContentScale.Crop,
+            Box(
+                modifier = Modifier.size(124.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // Scalloped Cookie-Shaped Badge rotating slowly behind stationary profile photo
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cx = size.width / 2f
+                    val cy = size.height / 2f
+                    val outerR = size.minDimension * 0.46f
+                    val scallops = 10
+                    val cookiePath = Path()
+                    val steps = 160
+                    for (i in 0..steps) {
+                        val theta = (i.toFloat() / steps) * 2.0 * PI
+                        val r = outerR * (0.91f + 0.09f * cos(scallops * theta).toFloat())
+                        val x = cx + r * cos(theta).toFloat()
+                        val y = cy + r * sin(theta).toFloat()
+                        if (i == 0) cookiePath.moveTo(x, y) else cookiePath.lineTo(x, y)
+                    }
+                    cookiePath.close()
+
+                    rotate(degrees = cookieRotation, pivot = Offset(cx, cy)) {
+                        drawPath(
+                            path = cookiePath,
+                            brush = Brush.sweepGradient(
+                                colors = listOf(
+                                    visuals.accent.copy(alpha = 0.28f),
+                                    visuals.accent.copy(alpha = 0.12f),
+                                    visuals.accent.copy(alpha = 0.34f),
+                                    visuals.accent.copy(alpha = 0.14f),
+                                    visuals.accent.copy(alpha = 0.28f)
+                                ),
+                                center = Offset(cx, cy)
+                            )
+                        )
+                        drawPath(
+                            path = cookiePath,
+                            color = visuals.accent.copy(alpha = 0.85f),
+                            style = Stroke(width = 2.4.dp.toPx(), join = StrokeJoin.Round)
+                        )
+                    }
+                }
+
+                // Stationary author photo inside rotating cookie frame
+                Image(
+                    painter = painterResource(R.drawable.evorez_avatar),
+                    contentDescription = "Evorez Profile Photo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .border(2.dp, visuals.solidSurfaceElevated, CircleShape)
+                )
+            }
+
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "𝙴𝚟𝚘𝚛𝚎𝚣🪽",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Evolve & Rise · @Evorez",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = JetBrainsMono,
+                    textAlign = TextAlign.Center,
+                    color = visuals.accent
+                )
+            }
+
+            GlassButton(
+                text = "Report bugs OR Have any ideas? PM ME",
+                icon = Icons.Rounded.Send,
+                onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/Evorez"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(intent) }
+                },
                 modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .border(2.dp, visuals.accent, CircleShape)
-            )
-            Text(
-                text = "𝙳𝚎𝚟𝚎𝚕𝚘𝚙𝚎𝚛 𝚖𝚘𝚍𝚎 𝙴𝚗𝚊𝚋𝚕𝚎𝚍 \n𝐁𝐔𝐓 𝐇𝐄𝐑𝐄'𝐒 𝐍𝐎𝐓𝐇𝐈𝐍𝐆 𝐅𝐎𝐑 𝐃𝐄𝐕𝐄𝐋𝐎𝐏𝐄𝐑 😂",
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurface
+                    .fillMaxWidth()
+                    .testTag("author_pm_me_btn")
             )
         }
     }

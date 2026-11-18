@@ -283,7 +283,7 @@ fun OnboardingScreen(
                             .clip(RoundedCornerShape(16.dp))
                             .clickable { selectedWorkMode = mode },
                         shape = RoundedCornerShape(16.dp),
-                        color = if (chosen) visuals.accent.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                        color = if (chosen) visuals.accent.copy(alpha = 0.14f) else visuals.solidSurfaceElevated,
                         border = BorderStroke(1.dp, if (chosen) visuals.accent else visuals.glassBorder)
                     ) {
                         Row(

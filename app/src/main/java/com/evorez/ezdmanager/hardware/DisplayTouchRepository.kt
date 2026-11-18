@@ -8,8 +8,11 @@ import com.evorez.ezdmanager.model.DisplayModeInfo
 import com.evorez.ezdmanager.model.DisplayState
 import com.evorez.ezdmanager.model.TouchState
 import com.evorez.ezdmanager.root.CommandBridge
+import com.evorez.ezdmanager.root.HwResult
+import com.evorez.ezdmanager.root.RootShell
 import com.evorez.ezdmanager.root.RootShellManager
 import com.evorez.ezdmanager.root.ShizukuManager
+import com.evorez.ezdmanager.root.describe
 import kotlin.math.roundToInt
 
 class DisplayTouchRepository(private val context: Context) {
@@ -60,7 +63,7 @@ class DisplayTouchRepository(private val context: Context) {
                 "/sys/class/drm/card0-DSI-1/cabc"
             )
             for (p in cabcCandidates) {
-                val valStr = RootShellManager.readSysfs(p)
+                val valStr = RootShell.readNode(p)
                 if (valStr != null) {
                     cabcPath = p
                     cabcEnabled = valStr != "0"
@@ -74,22 +77,25 @@ class DisplayTouchRepository(private val context: Context) {
                 "/sys/class/backlight/panel0-backlight/hbm_mode"
             )
             for (p in hbmCandidates) {
-                val valStr = RootShellManager.readSysfs(p)
+                val valStr = RootShell.readNode(p)
                 if (valStr != null) {
                     hbmPath = p
                     hbmEnabled = valStr != "0"
                     break
                 }
             }
-            val kcalVal = RootShellManager.readSysfs("/sys/devices/platform/kcal_ctrl.0/kcal_sat")
+            val kcalVal = RootShell.readNode("/sys/devices/platform/kcal_ctrl.0/kcal_sat")
             if (kcalVal != null) {
                 kcalSupported = true
                 kcalSat = kcalVal.toIntOrNull() ?: 255
             }
         }
 
+        val roundedCurrent = (currentHz * 10f).roundToInt() / 10f
+        val peakHardwareHz = modes.maxOfOrNull { it.refreshRateHz } ?: roundedCurrent
+
         return DisplayState(
-            currentRefreshHz = (currentHz * 10f).roundToInt() / 10f,
+            currentRefreshHz = roundedCurrent,
             supportedModes = modes,
             peakRefreshHz = peakHz,
             minRefreshHz = minHz,
@@ -104,7 +110,8 @@ class DisplayTouchRepository(private val context: Context) {
             saturationSupported = true,
             saturationValue = 1.0f,
             kcalSupported = kcalSupported,
-            kcalSatValue = kcalSat
+            kcalSatValue = kcalSat,
+            peakHardwareHz = peakHardwareHz
         )
     }
 
@@ -182,9 +189,8 @@ class DisplayTouchRepository(private val context: Context) {
     }
 
     suspend fun setHbm(path: String, enabled: Boolean): Pair<Boolean, String> {
-        val (ok, msg) = RootShellManager.writeAndVerify(path, if (enabled) "1" else "0")
-        return if (ok) true to "High Brightness Mode ${if (enabled) "enabled" else "disabled"}"
-        else false to (msg ?: "HBM write rejected")
+        val res = RootShell.writeAndVerify(path, if (enabled) "1" else "0")
+        return (res is HwResult.Applied) to res.describe("HBM")
     }
 
     suspend fun setSaturation(
@@ -196,12 +202,11 @@ class DisplayTouchRepository(private val context: Context) {
         val clamped = saturation.coerceIn(0.4f, 2.0f)
         if (kcalPathSupported && rootGranted) {
             val kcalValue = (255 * clamped).roundToInt().coerceIn(128, 383)
-            val (ok, msg) = RootShellManager.writeAndVerify(
+            val res = RootShell.writeAndVerify(
                 "/sys/devices/platform/kcal_ctrl.0/kcal_sat",
                 kcalValue.toString()
             )
-            if (ok) return true to "KCAL saturation set to ${String.format(java.util.Locale.US, "%.2f", clamped)}x"
-            return false to (msg ?: "KCAL write failed")
+            return (res is HwResult.Applied) to res.describe("KCAL saturation")
         }
         val res = CommandBridge.execPrivileged(
             "service call SurfaceFlinger 1022 f ${String.format(java.util.Locale.US, "%.2f", clamped)}",
@@ -216,8 +221,8 @@ class DisplayTouchRepository(private val context: Context) {
     }
 
     suspend fun setCabc(path: String, enabled: Boolean): Pair<Boolean, String> {
-        val (ok, msg) = RootShellManager.writeAndVerify(path, if (enabled) "1" else "0")
-        return if (ok) true to "CABC ${if (enabled) "enabled" else "disabled"}" else false to (msg ?: "CABC write rejected")
+        val res = RootShell.writeAndVerify(path, if (enabled) "1" else "0")
+        return (res is HwResult.Applied) to res.describe("CABC")
     }
 
     suspend fun scanTouch(shizukuGranted: Boolean = false): TouchState {
@@ -308,8 +313,8 @@ class DisplayTouchRepository(private val context: Context) {
     }
 
     suspend fun setTouchNode(path: String, value: String, label: String): Pair<Boolean, String> {
-        val (ok, msg) = RootShellManager.writeAndVerify(path, value)
-        return if (ok) true to "$label applied ($msg)" else false to "$label failed: ${msg ?: "rejected"}"
+        val res = RootShell.writeAndVerify(path, value)
+        return (res is HwResult.Applied) to res.describe(label)
     }
 
     suspend fun setDisableHwOverlays(

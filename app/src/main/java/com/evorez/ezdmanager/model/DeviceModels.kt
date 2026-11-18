@@ -1,6 +1,7 @@
 package com.evorez.ezdmanager.model
 
 import androidx.compose.runtime.Immutable
+import com.evorez.ezdmanager.root.HwResult
 
 enum class RootStatus {
     NOT_REQUESTED,
@@ -12,9 +13,9 @@ enum class RootStatus {
 
 enum class MainTab(val route: String, val label: String) {
     HOME("home", "Home"),
-    PERF("perf", "Performance"),
+    TOOLS("tools", "Tools"),
     APPS("apps", "Apps"),
-    TOOLS("tools", "Tools")
+    SETTINGS("settings", "Settings")
 }
 
 enum class WorkMode(val label: String, val subtitle: String) {
@@ -51,6 +52,19 @@ enum class ThemeMode(val label: String, val description: String) {
     LITE("Lite Mode", "Zero blur or gradients · Clean ultra-fast surfaces")
 }
 
+enum class BackgroundTexturePreset(val label: String, val subtitle: String) {
+    PLAIN("Plain", "Clean ambient surface"),
+    PAPER("Paper", "Warm tactile paper fiber grain"),
+    MOON("Moon", "Cratered lunar stone sheen"),
+    SILVER("Silver", "Brushed metallic silver grain")
+}
+
+enum class AppFontStyle(val label: String) {
+    SYSTEM("System Default"),
+    SERIF("Serif (Roman)"),
+    TYPEWRITER("Typewriter")
+}
+
 enum class ThemeCategory(val title: String) {
     WHITE("Light & Frosted White"),
     BLACK("AMOLED & Dark Glass"),
@@ -85,15 +99,6 @@ enum class EzdThemeStyle(
 }
 
 /**
- * Dock position for the in-app Floating Frosted Pill Navigation Bar (old build behavior).
- */
-enum class DockPosition(val label: String) {
-    BOTTOM("Bottom"),
-    LEFT("Left"),
-    RIGHT("Right")
-}
-
-/**
  * Anchor position for the optional system-wide Top Edge Quick-Access Floating Pill Overlay.
  */
 enum class PillPosition(val label: String) {
@@ -124,8 +129,9 @@ enum class ToolId(
     DISPLAY("Display", "Refresh rate, brightness, HBM & saturation"),
     TOUCH("Touch & HW Overlay", "Touch boost, sampling rate & HW overlay compositing"),
     NETWORK("Network", "TCP Fast/Rescue, congestion & DNS"),
-    AUDIO_ENHANCER("Audio Enhancer", "Bass enhancer, EQ bands & reactive visualizers"),
+    AUDIO_ENHANCER("Audio Enhancer", "Bass enhancer, EQ bands, loudness boost & visualizers"),
     BATTERY_SAVING("Battery Saving", "GMS control, background limit, trim & whitelist"),
+    FAST_CHARGE("Fast Charge", "Charging current-limit nodes, wattage & charge monitor"),
     DEVICE_SPOOF("Device Spoof", "Editable presets, preview & resetprop restore"),
     PROFILES("Profiles", "Balanced, Performance, Powersave & Custom"),
     MODULES("Root Modules", "Magisk / KernelSU modules & WebUI"),
@@ -133,7 +139,7 @@ enum class ToolId(
     BOOT_GUARD("Boot Guard", "3-boot safe mode & module auto-disable"),
     EZD_BACKUP("EZD Backup", "Encrypted backup & restore for EZD Manager config"),
     APP_BACKUP("App Backup", "Backup & restore APK, Data, Ext Data, OBB & Media"),
-    ROOT_TERMINAL("Shell Terminal", "Interactive Root / Shizuku shell command runner")
+    ROOT_TERMINAL("Root Terminal", "Interactive Root / Shizuku shell with specs, history & copy")
 }
 
 enum class PowerAction(
@@ -160,7 +166,7 @@ enum class GameProfileId(val id: String, val label: String, val description: Str
     BEAST("beast", "Beast Mode", "Locks 100% CPU/GPU, unthrottles governor & forces all cores online"),
     POWERSAVE("powersave", "Power Save", "GPU 10% · CPU 30% battery saver"),
     BALANCED("balanced", "Balanced", "GPU 30% · CPU 50% optimal efficiency"),
-    PERFORMANCE("performance", "Performance", "GPU 70% · CPU 70% boost with 120Hz"),
+    PERFORMANCE("performance", "Performance", "GPU 70% · CPU 70% boost with peak Hz"),
     CUSTOM("custom", "Custom", "User-configured tuning")
 }
 
@@ -248,7 +254,11 @@ data class GpuState(
     val originalMinRaw: Long? = null,
     val originalMaxRaw: Long? = null,
     val originalGovernor: String? = null,
-    val reason: String = "Checking GPU sysfs interfaces..."
+    val reason: String = "Probing GPU hardware nodes…",
+    val probeResult: HwResult? = null,
+    val pathsTried: List<String> = emptyList(),
+    val existingNodes: List<String> = emptyList(),
+    val writableNodes: List<String> = emptyList()
 )
 
 @Immutable
@@ -276,7 +286,8 @@ data class DisplayState(
     val saturationSupported: Boolean = true,
     val saturationValue: Float = 1.0f,
     val kcalSupported: Boolean = false,
-    val kcalSatValue: Int = 255
+    val kcalSatValue: Int = 255,
+    val peakHardwareHz: Float = 60f
 )
 
 @Immutable
@@ -329,6 +340,7 @@ data class AudioState(
     val activePreset: String = "Dynamic",
     val bassEnabled: Boolean = true,
     val equalizerEnabled: Boolean = true,
+    val increaseLoudnessEnabled: Boolean = false,
     val bassStrength: Int = 380,
     val bassFrequencyFocus: String = "Punch 60Hz",
     val loudnessGainMb: Int = 150,
@@ -337,6 +349,7 @@ data class AudioState(
     val bandsHz: List<Int> = listOf(60, 230, 910, 3600, 14000),
     val engineReady: Boolean = false,
     val bassEngineReady: Boolean = false,
+    val loudnessEngineReady: Boolean = false,
     val statusNote: String = ""
 )
 
@@ -455,7 +468,8 @@ data class BackupPreview(
     val includesApps: Boolean = false,
     val appCount: Int = 0,
     val categories: List<String>,
-    val checksumValid: Boolean
+    val checksumValid: Boolean,
+    val filePath: String = ""
 )
 
 @Immutable
@@ -514,7 +528,11 @@ data class ZramVmState(
     val vfsCachePressure: Int = 100,
     val dirtyRatio: Int = 20,
     val dirtyBackgroundRatio: Int = 10,
-    val statusNote: String = ""
+    val statusNote: String = "",
+    val probeResult: HwResult? = null,
+    val pathsTried: List<String> = emptyList(),
+    val existingNodes: List<String> = emptyList(),
+    val writableNodes: List<String> = emptyList()
 )
 
 @Immutable
@@ -549,7 +567,10 @@ data class IoThermalUiState(
     val windowAnimScale: Float = 1.0f,
     val transitionAnimScale: Float = 1.0f,
     val animatorDurationScale: Float = 1.0f,
-    val gpuRenderer: GpuRendererMode = GpuRendererMode.SYSTEM_DEFAULT
+    val gpuRenderer: GpuRendererMode = GpuRendererMode.SYSTEM_DEFAULT,
+    val ioProbeResult: HwResult? = null,
+    val ioPathsTried: List<String> = emptyList(),
+    val ioStatusNote: String = ""
 )
 
 @Immutable
@@ -577,6 +598,8 @@ data class BatteryMonitorStats(
     val chargeRatePctPerHr: Float = 0f,
     val activeDrainPctPerHr: Float = 0f,
     val idleDrainPctPerHr: Float = 0f,
+    val activeHistoryReady: Boolean = false,
+    val idleHistoryReady: Boolean = false,
     val avgActiveMa: Int = 0,
     val avgIdleMa: Int = 0,
     val screenOnMs: Long = 0L,
@@ -623,4 +646,56 @@ data class GitHubReleaseInfo(
     val downloadUrl: String = "",
     val updateAvailable: Boolean = false,
     val statusMessage: String = ""
+)
+
+enum class EngineItemStatus {
+    OK,
+    FAILED,
+    UNSUPPORTED
+}
+
+@Immutable
+data class EngineStepResult(
+    val category: String,
+    val label: String,
+    val status: EngineItemStatus,
+    val reason: String,
+    val path: String = ""
+)
+
+@Immutable
+data class BeastExecutionReport(
+    val active: Boolean = false,
+    val timestampMs: Long = 0L,
+    val peakHzUsed: Float = 60f,
+    val items: List<EngineStepResult> = emptyList(),
+    val summary: String = ""
+)
+
+@Immutable
+data class ThermalTelemetry(
+    val batteryTempC: Float = 0f,
+    val socTempC: Float? = null,
+    val socZonePath: String? = null,
+    val socZoneType: String = "",
+    val lastUpdatedMs: Long = 0L
+)
+
+@Immutable
+data class FastChargeState(
+    val currentMa: Int = 0,
+    val voltageMv: Int = 0,
+    val powerWatts: Float = 0f,
+    val isCharging: Boolean = false,
+    val chargeSource: String = "Discharging",
+    val chargeType: String = "Unknown",
+    val activeLimitMa: Int? = null,
+    val currentLimitPath: String? = null,
+    val forceFastChargePath: String? = null,
+    val forceFastChargeEnabled: Boolean = false,
+    val existingNodes: List<String> = emptyList(),
+    val writableNodes: List<String> = emptyList(),
+    val pathsTried: List<String> = emptyList(),
+    val probeResult: HwResult? = null,
+    val reason: String = "Probing charging current-limit nodes…"
 )

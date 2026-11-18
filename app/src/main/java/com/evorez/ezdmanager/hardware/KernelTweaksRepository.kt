@@ -4,7 +4,10 @@ import android.content.Context
 import android.provider.Settings
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.root.CommandBridge
+import com.evorez.ezdmanager.root.HwResult
+import com.evorez.ezdmanager.root.RootShell
 import com.evorez.ezdmanager.root.RootShellManager
+import com.evorez.ezdmanager.root.describe
 import java.util.Locale
 
 class KernelTweaksRepository(private val context: Context) {
@@ -13,58 +16,8 @@ class KernelTweaksRepository(private val context: Context) {
     // 1. ZRAM & VM TWEAKS (size, compression algorithm, swappiness, cache)
     // ========================================================================
 
-    suspend fun scanZramVm(rootGranted: Boolean): ZramVmState {
-        val swappiness = RootShellManager.readSysfs("/proc/sys/vm/swappiness")?.toIntOrNull() ?: 60
-        val vfsPressure = RootShellManager.readSysfs("/proc/sys/vm/vfs_cache_pressure")?.toIntOrNull() ?: 100
-        val dirtyRatio = RootShellManager.readSysfs("/proc/sys/vm/dirty_ratio")?.toIntOrNull() ?: 20
-        val dirtyBg = RootShellManager.readSysfs("/proc/sys/vm/dirty_background_ratio")?.toIntOrNull() ?: 10
-
-        val diskBytes = RootShellManager.readSysfs("/sys/block/zram0/disksize")?.toLongOrNull()
-        val compRaw = RootShellManager.readSysfs("/sys/block/zram0/comp_algorithm")
-        val mmStatRaw = RootShellManager.readSysfs("/sys/block/zram0/mm_stat")
-        val memUsed = RootShellManager.readSysfs("/sys/block/zram0/mem_used_total")?.toLongOrNull()
-        val origSize = RootShellManager.readSysfs("/sys/block/zram0/orig_data_size")?.toLongOrNull()
-
-        var origMb = (origSize ?: 0L) / (1024L * 1024L)
-        var usedMb = (memUsed ?: 0L) / (1024L * 1024L)
-        if (!mmStatRaw.isNullOrBlank()) {
-            val cols = mmStatRaw.trim().split(Regex("\\s+"))
-            cols.getOrNull(0)?.toLongOrNull()?.let { origMb = it / (1024L * 1024L) }
-            cols.getOrNull(2)?.toLongOrNull()?.let { usedMb = it / (1024L * 1024L) }
-        }
-
-        val algos = mutableListOf<String>()
-        var activeAlgo = "Unavailable"
-        compRaw?.split(Regex("\\s+"))?.filter { it.isNotBlank() }?.forEach { token ->
-            if (token.startsWith("[") && token.endsWith("]")) {
-                val clean = token.removePrefix("[").removeSuffix("]")
-                activeAlgo = clean
-                algos.add(clean)
-            } else {
-                algos.add(token)
-            }
-        }
-
-        val supported = diskBytes != null || compRaw != null
-        val note = when {
-            !rootGranted -> "Grant root access to resize ZRAM, switch compression, or tune /proc/sys/vm."
-            !supported -> "Kernel /sys/block/zram0 interface not exposed; VM tuning remains available."
-            else -> "ZRAM live telemetry active."
-        }
-
-        return ZramVmState(
-            zramSupported = supported,
-            diskSizeMb = (diskBytes ?: 0L) / (1024L * 1024L),
-            usedMemMb = usedMb,
-            origDataMb = origMb,
-            currentAlgorithm = activeAlgo,
-            availableAlgorithms = algos.distinct(),
-            swappiness = swappiness,
-            vfsCachePressure = vfsPressure,
-            dirtyRatio = dirtyRatio,
-            dirtyBackgroundRatio = dirtyBg,
-            statusNote = note
-        )
+    suspend fun scanZramVm(forceRefresh: Boolean = true): ZramVmState {
+        return HardwareProbe.probe(context, forceRefresh = forceRefresh).zramVmState
     }
 
     suspend fun applyZramConfig(sizeMb: Long, algorithm: String): Pair<Boolean, String> {
@@ -72,11 +25,20 @@ class KernelTweaksRepository(private val context: Context) {
         val bytes = clampedMb * 1024L * 1024L
         val safeAlgo = algorithm.trim().takeIf { it.matches(Regex("^[a-zA-Z0-9_-]+$")) }
 
+        if (!RootShell.isSuGranted()) {
+            return false to HwResult.PermissionDenied.describe("ZRAM")
+        }
+
+        val existsCheck = RootShell.exec("[ -d /sys/block/zram0 ] && echo OK || echo NF", timeoutMs = 2_000L)
+        if (!existsCheck.stdout.contains("OK")) {
+            return false to HwResult.NotFound(listOf("/sys/block/zram0")).describe("ZRAM")
+        }
+
         val script = buildString {
             appendLine("swapoff /dev/block/zram0 2>/dev/null || true")
             appendLine("echo 1 > /sys/block/zram0/reset 2>/dev/null || true")
             if (safeAlgo != null && clampedMb > 0L) {
-                appendLine("echo ${RootShellManager.shellQuote(safeAlgo)} > /sys/block/zram0/comp_algorithm 2>/dev/null || true")
+                appendLine("echo ${RootShell.shellQuote(safeAlgo)} > /sys/block/zram0/comp_algorithm 2>/dev/null || true")
             }
             appendLine("echo $bytes > /sys/block/zram0/disksize")
             if (clampedMb > 0L) {
@@ -84,12 +46,17 @@ class KernelTweaksRepository(private val context: Context) {
                 appendLine("swapon /dev/block/zram0 >/dev/null 2>&1")
             }
         }
-        val res = RootShellManager.exec(script, timeoutMs = 8_000L)
-        return if (res.success) {
-            val algoText = safeAlgo ?: "default"
-            true to if (clampedMb == 0L) "ZRAM swap disabled (0 MB)" else "ZRAM set to ${clampedMb} MB ($algoText)"
+        val res = RootShell.exec(script, timeoutMs = 8_000L)
+        val readBackBytes = RootShell.readNode("/sys/block/zram0/disksize")?.toLongOrNull()
+        val readBackAlgo = RootShell.readNode("/sys/block/zram0/comp_algorithm").orEmpty()
+        return if (res.isSuccess && readBackBytes == bytes) {
+            true to HwResult.Applied("${bytes / (1024L * 1024L)} MB ($readBackAlgo)").describe("ZRAM")
+        } else if (res.stderr.contains("Permission denied", true) && RootShell.getSelinuxMode().equals("Enforcing", true)) {
+            false to HwResult.SelinuxBlocked.describe("ZRAM")
         } else {
-            false to "ZRAM update failed: ${res.combinedText.ifBlank { "kernel rejected size or swapoff busy" }}"
+            false to HwResult.Rejected(
+                "disksize read-back=${readBackBytes ?: "null"} expected=$bytes (${res.stderr.ifBlank { "kernel rejected size or swapoff busy" }})"
+            ).describe("ZRAM")
         }
     }
 
@@ -104,17 +71,18 @@ class KernelTweaksRepository(private val context: Context) {
         val dr = dirtyRatio.coerceIn(5, 80)
         val dbg = dirtyBgRatio.coerceIn(2, dr.coerceAtMost(50))
 
-        val cmd = """
-            sysctl -w vm.swappiness=$sw >/dev/null 2>&1 || echo $sw > /proc/sys/vm/swappiness
-            sysctl -w vm.vfs_cache_pressure=$vfs >/dev/null 2>&1 || echo $vfs > /proc/sys/vm/vfs_cache_pressure
-            sysctl -w vm.dirty_ratio=$dr >/dev/null 2>&1 || echo $dr > /proc/sys/vm/dirty_ratio
-            sysctl -w vm.dirty_background_ratio=$dbg >/dev/null 2>&1 || echo $dbg > /proc/sys/vm/dirty_background_ratio
-        """.trimIndent()
-        val res = RootShellManager.exec(cmd)
-        return if (res.success) {
-            true to "VM applied: swappiness=$sw, vfs_cache=$vfs, dirty=$dr/$dbg"
+        val r1 = RootShell.writeAndVerify("/proc/sys/vm/swappiness", sw.toString())
+        val r2 = RootShell.writeAndVerify("/proc/sys/vm/vfs_cache_pressure", vfs.toString())
+        val r3 = RootShell.writeAndVerify("/proc/sys/vm/dirty_ratio", dr.toString())
+        val r4 = RootShell.writeAndVerify("/proc/sys/vm/dirty_background_ratio", dbg.toString())
+
+        val results = listOf(r1, r2, r3, r4)
+        val ok = results.all { it is HwResult.Applied }
+        return if (ok) {
+            true to "VM Applied: sw=$sw, vfs=$vfs, dirty=$dr/$dbg"
         } else {
-            false to "VM sysctl write requires root access"
+            val firstErr = results.first { it !is HwResult.Applied }
+            false to firstErr.describe("VM tunables")
         }
     }
 
@@ -122,56 +90,26 @@ class KernelTweaksRepository(private val context: Context) {
     // 2. I/O SCHEDULER, READ-AHEAD, THERMAL PROFILE, ANIMATION SCALE & GPU RENDERER
     // ========================================================================
 
-    suspend fun scanIoThermalUi(rootGranted: Boolean): IoThermalUiState {
-        val blockList = mutableListOf<IoBlockDevice>()
-        val probeCmd = """
-            for d in /sys/block/sda /sys/block/sdb /sys/block/sdc /sys/block/mmcblk0 /sys/block/mmcblk1 /sys/block/dm-0; do
-              if [ -d "${'$'}d/queue" ]; then
-                NAME=$(basename "${'$'}d")
-                SCH=$(cat "${'$'}d/queue/scheduler" 2>/dev/null)
-                RA=$(cat "${'$'}d/queue/read_ahead_kb" 2>/dev/null)
-                echo "BLK|${'$'}NAME|${'$'}d|${'$'}SCH|${'$'}RA"
-              fi
-            done
+    suspend fun scanIoThermalUi(rootGranted: Boolean, forceRefresh: Boolean = true): IoThermalUiState {
+        val probe = HardwareProbe.probe(context, forceRefresh = forceRefresh)
+        val propScript = """
             echo "THERMZ|$(ls -d /sys/class/thermal/thermal_zone* 2>/dev/null | wc -l)"
             echo "THPROP|$(getprop persist.ezd.thermal_profile)"
             echo "RENDER|$(getprop debug.hwui.renderer)"
         """.trimIndent()
 
         val res = if (rootGranted) {
-            RootShellManager.exec(probeCmd, timeoutMs = 4_000L)
+            RootShell.exec(propScript, timeoutMs = 3_000L)
         } else {
-            RootShellManager.execUnprivileged(probeCmd, timeoutMs = 3_000L)
+            RootShell.execLocalSh(propScript, timeoutMs = 2_500L)
         }
 
         var thermZones = 0
         var thermProp = ""
         var rendererProp = ""
-
-        res.stdout.forEach { line ->
+        res.stdoutLines.forEach { line ->
             val parts = line.split('|')
             when (parts.firstOrNull()) {
-                "BLK" -> {
-                    val name = parts.getOrNull(1).orEmpty()
-                    val path = parts.getOrNull(2).orEmpty()
-                    val schRaw = parts.getOrNull(3).orEmpty()
-                    val ra = parts.getOrNull(4)?.trim()?.toIntOrNull() ?: 128
-
-                    var activeSch = "default"
-                    val avail = mutableListOf<String>()
-                    schRaw.split(Regex("\\s+")).filter { it.isNotBlank() }.forEach { tok ->
-                        if (tok.startsWith("[") && tok.endsWith("]")) {
-                            val clean = tok.removePrefix("[").removeSuffix("]")
-                            activeSch = clean
-                            avail.add(clean)
-                        } else {
-                            avail.add(tok)
-                        }
-                    }
-                    if (name.isNotBlank() && avail.isNotEmpty()) {
-                        blockList.add(IoBlockDevice(name, path, activeSch, avail.distinct(), ra))
-                    }
-                }
                 "THERMZ" -> thermZones = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
                 "THPROP" -> thermProp = parts.getOrNull(1)?.trim().orEmpty()
                 "RENDER" -> rendererProp = parts.getOrNull(1)?.trim().orEmpty()
@@ -189,35 +127,36 @@ class KernelTweaksRepository(private val context: Context) {
         }.getOrDefault(ThermalProfileMode.STOCK)
 
         val thermalNote = when {
-            !rootGranted -> "Root access needed to modify vendor thermal throttle policies & block I/O queues."
+            !rootGranted -> "Root (su) required to modify vendor thermal throttle policies & block I/O queues."
             thermZones > 0 -> "$thermZones thermal zones detected · Safe threshold modulation ready."
             else -> "Using property-based thermal profile fallback."
         }
 
         return IoThermalUiState(
-            blockDevices = blockList,
+            blockDevices = probe.ioDevices,
             thermalProfile = thermalMode,
             thermalZoneCount = thermZones,
             thermalBackendNote = thermalNote,
             windowAnimScale = winScale,
             transitionAnimScale = transScale,
             animatorDurationScale = animScale,
-            gpuRenderer = renderer
+            gpuRenderer = renderer,
+            ioProbeResult = probe.ioResult,
+            ioPathsTried = probe.ioPathsTried,
+            ioStatusNote = probe.ioReason
         )
     }
 
     suspend fun setIoScheduler(device: IoBlockDevice, scheduler: String): Pair<Boolean, String> {
-        if (!scheduler.matches(Regex("^[a-zA-Z0-9_-]+$"))) return false to "Invalid I/O scheduler name"
-        val (ok, msg) = RootShellManager.writeAndVerify("${device.sysfsPath}/queue/scheduler", scheduler)
-        return if (ok) true to "${device.name} scheduler set to $scheduler"
-        else false to "Failed writing ${device.name}/scheduler: ${msg ?: "requires root"}"
+        if (!scheduler.matches(Regex("^[a-zA-Z0-9_-]+$"))) return false to "Rejected: invalid scheduler name $scheduler"
+        val res = RootShell.writeAndVerify("${device.sysfsPath}/queue/scheduler", scheduler)
+        return (res is HwResult.Applied) to res.describe("${device.name} scheduler")
     }
 
     suspend fun setIoReadAhead(device: IoBlockDevice, kb: Int): Pair<Boolean, String> {
         val clamped = kb.coerceIn(64, 4096)
-        val (ok, msg) = RootShellManager.writeAndVerify("${device.sysfsPath}/queue/read_ahead_kb", clamped.toString())
-        return if (ok) true to "${device.name} read-ahead set to ${clamped} KB"
-        else false to "Failed writing read_ahead_kb: ${msg ?: "requires root"}"
+        val res = RootShell.writeAndVerify("${device.sysfsPath}/queue/read_ahead_kb", clamped.toString())
+        return (res is HwResult.Applied) to res.describe("${device.name} read_ahead_kb")
     }
 
     suspend fun applyThermalProfile(mode: ThermalProfileMode): Pair<Boolean, String> {

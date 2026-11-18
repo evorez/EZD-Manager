@@ -27,7 +27,6 @@ data class UserSettings(
     val themeStyle: EzdThemeStyle = EzdThemeStyle.AMOLED_OBSIDIAN,
     val animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH,
     val workMode: WorkMode = WorkMode.AUTO,
-    val dockPosition: DockPosition = DockPosition.BOTTOM,
     val notifications: NotificationPrefs = NotificationPrefs(),
     val activeProfileId: String = "balanced",
     val daemonEnabled: Boolean = true,
@@ -39,9 +38,17 @@ data class UserSettings(
     val bootMemory: BootMemoryConfig = BootMemoryConfig(),
     val accentPreset: AccentColorPreset = AccentColorPreset.THEME_DEFAULT,
     val blurIntensity: Float = 0.78f,
-    val hapticsEnabled: Boolean = true,
     val reduceAnimations: Boolean = false,
-    val floatingPillOpaque: Boolean = false
+    val floatingPillOpaque: Boolean = false,
+    val beastBatteryTempLimitC: Float = 43f,
+    val beastSocTempLimitC: Float = 75f,
+    val beastIgnoreThermalLimits: Boolean = false,
+    val audioIncreaseLoudness: Boolean = false,
+    val audioLoudnessGainMb: Int = 600,
+    val backgroundTexture: BackgroundTexturePreset = BackgroundTexturePreset.PLAIN,
+    val backgroundTextureOpacity: Float = 0.35f,
+    val appFontStyle: AppFontStyle = AppFontStyle.SYSTEM,
+    val pinnedPillTools: List<ToolId> = emptyList()
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -55,7 +62,6 @@ class SettingsDataStore(private val context: Context) {
         val THEME_STYLE = stringPreferencesKey("theme_style")
         val ANIM_STYLE = stringPreferencesKey("anim_style")
         val WORK_MODE = stringPreferencesKey("work_mode")
-        val DOCK_POSITION = stringPreferencesKey("dock_position")
         val NOTIF_DAEMON = booleanPreferencesKey("notif_daemon")
         val NOTIF_BATTERY = booleanPreferencesKey("notif_battery")
         val NOTIF_UNREAD = intPreferencesKey("notif_unread")
@@ -69,13 +75,21 @@ class SettingsDataStore(private val context: Context) {
         val BOOT_MEMORY_JSON = stringPreferencesKey("boot_memory_json")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val BLUR_INTENSITY = floatPreferencesKey("blur_intensity")
-        val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
         val REDUCE_ANIMATIONS = booleanPreferencesKey("reduce_animations")
         val FLOATING_PILL_OPAQUE = booleanPreferencesKey("floating_pill_opaque")
         val CUSTOM_PROFILES = stringPreferencesKey("custom_profiles_json")
         val PER_APP_CONFIGS = stringPreferencesKey("per_app_configs_json")
         val CUSTOM_SPOOF_DEVICES = stringPreferencesKey("custom_spoof_devices_json")
         val BATTERY_WHITELIST = stringPreferencesKey("battery_whitelist_json")
+        val BEAST_BATTERY_LIMIT_C = floatPreferencesKey("beast_battery_limit_c")
+        val BEAST_SOC_LIMIT_C = floatPreferencesKey("beast_soc_limit_c")
+        val BEAST_IGNORE_THERMAL = booleanPreferencesKey("beast_ignore_thermal")
+        val AUDIO_INCREASE_LOUDNESS = booleanPreferencesKey("audio_increase_loudness")
+        val AUDIO_LOUDNESS_GAIN_MB = intPreferencesKey("audio_loudness_gain_mb")
+        val BG_TEXTURE = stringPreferencesKey("background_texture")
+        val BG_TEXTURE_OPACITY = floatPreferencesKey("background_texture_opacity")
+        val APP_FONT_STYLE = stringPreferencesKey("app_font_style")
+        val PINNED_PILL_TOOLS = stringPreferencesKey("pinned_pill_tools_json")
     }
 
     val settingsFlow: Flow<UserSettings> = context.ezdDataStore.data.map { prefs ->
@@ -94,7 +108,6 @@ class SettingsDataStore(private val context: Context) {
             themeStyle = enumOrDefault(prefs[Keys.THEME_STYLE], EzdThemeStyle.AMOLED_OBSIDIAN),
             animStyle = enumOrDefault(prefs[Keys.ANIM_STYLE], AppAnimStyle.IOS_CARD_MORPH),
             workMode = enumOrDefault(prefs[Keys.WORK_MODE], WorkMode.AUTO),
-            dockPosition = enumOrDefault(prefs[Keys.DOCK_POSITION], DockPosition.BOTTOM),
             notifications = NotificationPrefs(
                 daemonAlerts = prefs[Keys.NOTIF_DAEMON] ?: true,
                 batteryAlerts = prefs[Keys.NOTIF_BATTERY] ?: false,
@@ -110,9 +123,17 @@ class SettingsDataStore(private val context: Context) {
             bootMemory = parseBootMemory(prefs[Keys.BOOT_MEMORY_JSON].orEmpty()),
             accentPreset = enumOrDefault(prefs[Keys.ACCENT_PRESET], AccentColorPreset.THEME_DEFAULT),
             blurIntensity = (prefs[Keys.BLUR_INTENSITY] ?: 0.78f).coerceIn(0f, 1f),
-            hapticsEnabled = prefs[Keys.HAPTICS_ENABLED] ?: true,
             reduceAnimations = prefs[Keys.REDUCE_ANIMATIONS] ?: false,
-            floatingPillOpaque = prefs[Keys.FLOATING_PILL_OPAQUE] ?: false
+            floatingPillOpaque = prefs[Keys.FLOATING_PILL_OPAQUE] ?: false,
+            beastBatteryTempLimitC = (prefs[Keys.BEAST_BATTERY_LIMIT_C] ?: 43f).coerceIn(36f, 55f),
+            beastSocTempLimitC = (prefs[Keys.BEAST_SOC_LIMIT_C] ?: 75f).coerceIn(55f, 95f),
+            beastIgnoreThermalLimits = prefs[Keys.BEAST_IGNORE_THERMAL] ?: false,
+            audioIncreaseLoudness = prefs[Keys.AUDIO_INCREASE_LOUDNESS] ?: false,
+            audioLoudnessGainMb = (prefs[Keys.AUDIO_LOUDNESS_GAIN_MB] ?: 600).coerceIn(0, 2400),
+            backgroundTexture = enumOrDefault(prefs[Keys.BG_TEXTURE], BackgroundTexturePreset.PLAIN),
+            backgroundTextureOpacity = (prefs[Keys.BG_TEXTURE_OPACITY] ?: 0.35f).coerceIn(0f, 1f),
+            appFontStyle = enumOrDefault(prefs[Keys.APP_FONT_STYLE], AppFontStyle.SYSTEM),
+            pinnedPillTools = parsePinnedTools(prefs[Keys.PINNED_PILL_TOOLS].orEmpty())
         )
     }
 
@@ -168,10 +189,6 @@ class SettingsDataStore(private val context: Context) {
         }
     }
 
-    suspend fun setDockPosition(pos: DockPosition) {
-        context.ezdDataStore.edit { it[Keys.DOCK_POSITION] = pos.name }
-    }
-
     suspend fun setFloatingPillOpaque(opaque: Boolean) {
         context.ezdDataStore.edit { it[Keys.FLOATING_PILL_OPAQUE] = opaque }
     }
@@ -200,13 +217,29 @@ class SettingsDataStore(private val context: Context) {
         bassEnabled: Boolean? = null,
         eqEnabled: Boolean? = null,
         visualStyle: AudioVisualStyle? = null,
-        bassFocus: String? = null
+        bassFocus: String? = null,
+        increaseLoudness: Boolean? = null,
+        loudnessGainMb: Int? = null
     ) {
         context.ezdDataStore.edit { prefs ->
             bassEnabled?.let { prefs[Keys.AUDIO_BASS_ENABLED] = it }
             eqEnabled?.let { prefs[Keys.AUDIO_EQ_ENABLED] = it }
             visualStyle?.let { prefs[Keys.AUDIO_VISUAL_STYLE] = it.name }
             bassFocus?.let { prefs[Keys.AUDIO_BASS_FOCUS] = it }
+            increaseLoudness?.let { prefs[Keys.AUDIO_INCREASE_LOUDNESS] = it }
+            loudnessGainMb?.let { prefs[Keys.AUDIO_LOUDNESS_GAIN_MB] = it.coerceIn(0, 2400) }
+        }
+    }
+
+    suspend fun setBeastThermalConfig(
+        batteryLimitC: Float? = null,
+        socLimitC: Float? = null,
+        ignoreLimits: Boolean? = null
+    ) {
+        context.ezdDataStore.edit { prefs ->
+            batteryLimitC?.let { prefs[Keys.BEAST_BATTERY_LIMIT_C] = it.coerceIn(36f, 55f) }
+            socLimitC?.let { prefs[Keys.BEAST_SOC_LIMIT_C] = it.coerceIn(55f, 95f) }
+            ignoreLimits?.let { prefs[Keys.BEAST_IGNORE_THERMAL] = it }
         }
     }
 
@@ -233,12 +266,26 @@ class SettingsDataStore(private val context: Context) {
         context.ezdDataStore.edit { it[Keys.BLUR_INTENSITY] = intensity.coerceIn(0f, 1f) }
     }
 
-    suspend fun setHapticsEnabled(enabled: Boolean) {
-        context.ezdDataStore.edit { it[Keys.HAPTICS_ENABLED] = enabled }
-    }
-
     suspend fun setReduceAnimations(reduce: Boolean) {
         context.ezdDataStore.edit { it[Keys.REDUCE_ANIMATIONS] = reduce }
+    }
+
+    suspend fun setBackgroundTexture(preset: BackgroundTexturePreset) {
+        context.ezdDataStore.edit { it[Keys.BG_TEXTURE] = preset.name }
+    }
+
+    suspend fun setBackgroundTextureOpacity(opacity: Float) {
+        context.ezdDataStore.edit { it[Keys.BG_TEXTURE_OPACITY] = opacity.coerceIn(0f, 1f) }
+    }
+
+    suspend fun setAppFontStyle(fontStyle: AppFontStyle) {
+        context.ezdDataStore.edit { it[Keys.APP_FONT_STYLE] = fontStyle.name }
+    }
+
+    suspend fun setPinnedPillTools(tools: List<ToolId>) {
+        val arr = JSONArray()
+        tools.distinct().forEach { arr.put(it.name) }
+        context.ezdDataStore.edit { it[Keys.PINNED_PILL_TOOLS] = arr.toString() }
     }
 
     suspend fun saveBatteryWhitelist(pkgs: Set<String>) {
@@ -319,14 +366,12 @@ class SettingsDataStore(private val context: Context) {
                 put("themeStyle", p[Keys.THEME_STYLE] ?: EzdThemeStyle.AMOLED_OBSIDIAN.name)
                 put("animStyle", p[Keys.ANIM_STYLE] ?: AppAnimStyle.IOS_CARD_MORPH.name)
                 put("workMode", p[Keys.WORK_MODE] ?: WorkMode.AUTO.name)
-                put("dockPosition", p[Keys.DOCK_POSITION] ?: DockPosition.BOTTOM.name)
                 put("activeProfile", p[Keys.ACTIVE_PROFILE] ?: "balanced")
                 put("daemonEnabled", p[Keys.DAEMON_ENABLED] ?: true)
                 put("audioPreset", p[Keys.AUDIO_PRESET] ?: "Dynamic")
                 put("bootMemory", p[Keys.BOOT_MEMORY_JSON] ?: "")
                 put("accentPreset", p[Keys.ACCENT_PRESET] ?: AccentColorPreset.THEME_DEFAULT.name)
                 put("blurIntensity", (p[Keys.BLUR_INTENSITY] ?: 0.78f).toDouble())
-                put("hapticsEnabled", p[Keys.HAPTICS_ENABLED] ?: true)
                 put("reduceAnimations", p[Keys.REDUCE_ANIMATIONS] ?: false)
                 put("floatingPillOpaque", p[Keys.FLOATING_PILL_OPAQUE] ?: false)
                 put("notifDaemon", p[Keys.NOTIF_DAEMON] ?: true)
@@ -335,6 +380,15 @@ class SettingsDataStore(private val context: Context) {
                 put("perAppConfigs", p[Keys.PER_APP_CONFIGS] ?: "[]")
                 put("customSpoofDevices", p[Keys.CUSTOM_SPOOF_DEVICES] ?: "[]")
                 put("batteryWhitelist", p[Keys.BATTERY_WHITELIST] ?: "[]")
+                put("beastBatteryLimitC", (p[Keys.BEAST_BATTERY_LIMIT_C] ?: 43f).toDouble())
+                put("beastSocLimitC", (p[Keys.BEAST_SOC_LIMIT_C] ?: 75f).toDouble())
+                put("beastIgnoreThermal", p[Keys.BEAST_IGNORE_THERMAL] ?: false)
+                put("audioIncreaseLoudness", p[Keys.AUDIO_INCREASE_LOUDNESS] ?: false)
+                put("audioLoudnessGainMb", p[Keys.AUDIO_LOUDNESS_GAIN_MB] ?: 600)
+                put("backgroundTexture", p[Keys.BG_TEXTURE] ?: BackgroundTexturePreset.PLAIN.name)
+                put("backgroundTextureOpacity", (p[Keys.BG_TEXTURE_OPACITY] ?: 0.35f).toDouble())
+                put("appFontStyle", p[Keys.APP_FONT_STYLE] ?: AppFontStyle.SYSTEM.name)
+                put("pinnedPillTools", p[Keys.PINNED_PILL_TOOLS] ?: "[]")
             }
         }.first()
     }
@@ -363,20 +417,27 @@ class SettingsDataStore(private val context: Context) {
             obj.optString("themeStyle").takeIf { it.isNotBlank() }?.let { prefs[Keys.THEME_STYLE] = it }
             obj.optString("animStyle").takeIf { it.isNotBlank() }?.let { prefs[Keys.ANIM_STYLE] = it }
             obj.optString("workMode").takeIf { it.isNotBlank() }?.let { prefs[Keys.WORK_MODE] = it }
-            obj.optString("dockPosition").takeIf { it.isNotBlank() }?.let { prefs[Keys.DOCK_POSITION] = it }
             obj.optString("activeProfile").takeIf { it.isNotBlank() }?.let { prefs[Keys.ACTIVE_PROFILE] = it }
             if (obj.has("daemonEnabled")) prefs[Keys.DAEMON_ENABLED] = obj.optBoolean("daemonEnabled", true)
             obj.optString("audioPreset").takeIf { it.isNotBlank() }?.let { prefs[Keys.AUDIO_PRESET] = it }
             obj.optString("bootMemory").takeIf { it.isNotBlank() }?.let { prefs[Keys.BOOT_MEMORY_JSON] = it }
             obj.optString("accentPreset").takeIf { it.isNotBlank() }?.let { prefs[Keys.ACCENT_PRESET] = it }
             if (obj.has("blurIntensity")) prefs[Keys.BLUR_INTENSITY] = obj.optDouble("blurIntensity", 0.78).toFloat().coerceIn(0f, 1f)
-            if (obj.has("hapticsEnabled")) prefs[Keys.HAPTICS_ENABLED] = obj.optBoolean("hapticsEnabled", true)
             if (obj.has("reduceAnimations")) prefs[Keys.REDUCE_ANIMATIONS] = obj.optBoolean("reduceAnimations", false)
             if (obj.has("floatingPillOpaque")) prefs[Keys.FLOATING_PILL_OPAQUE] = obj.optBoolean("floatingPillOpaque", false)
             obj.optString("customProfiles").takeIf { it.isNotBlank() }?.let { prefs[Keys.CUSTOM_PROFILES] = it }
             obj.optString("perAppConfigs").takeIf { it.isNotBlank() }?.let { prefs[Keys.PER_APP_CONFIGS] = it }
             obj.optString("customSpoofDevices").takeIf { it.isNotBlank() }?.let { prefs[Keys.CUSTOM_SPOOF_DEVICES] = it }
             obj.optString("batteryWhitelist").takeIf { it.isNotBlank() }?.let { prefs[Keys.BATTERY_WHITELIST] = it }
+            if (obj.has("beastBatteryLimitC")) prefs[Keys.BEAST_BATTERY_LIMIT_C] = obj.optDouble("beastBatteryLimitC", 43.0).toFloat().coerceIn(36f, 55f)
+            if (obj.has("beastSocLimitC")) prefs[Keys.BEAST_SOC_LIMIT_C] = obj.optDouble("beastSocLimitC", 75.0).toFloat().coerceIn(55f, 95f)
+            if (obj.has("beastIgnoreThermal")) prefs[Keys.BEAST_IGNORE_THERMAL] = obj.optBoolean("beastIgnoreThermal", false)
+            if (obj.has("audioIncreaseLoudness")) prefs[Keys.AUDIO_INCREASE_LOUDNESS] = obj.optBoolean("audioIncreaseLoudness", false)
+            if (obj.has("audioLoudnessGainMb")) prefs[Keys.AUDIO_LOUDNESS_GAIN_MB] = obj.optInt("audioLoudnessGainMb", 600).coerceIn(0, 2400)
+            obj.optString("backgroundTexture").takeIf { it.isNotBlank() }?.let { prefs[Keys.BG_TEXTURE] = it }
+            if (obj.has("backgroundTextureOpacity")) prefs[Keys.BG_TEXTURE_OPACITY] = obj.optDouble("backgroundTextureOpacity", 0.35).toFloat().coerceIn(0f, 1f)
+            obj.optString("appFontStyle").takeIf { it.isNotBlank() }?.let { prefs[Keys.APP_FONT_STYLE] = it }
+            obj.optString("pinnedPillTools").takeIf { it.isNotBlank() }?.let { prefs[Keys.PINNED_PILL_TOOLS] = it }
         }
     }
 
@@ -405,6 +466,18 @@ class SettingsDataStore(private val context: Context) {
             val arr = JSONArray(raw)
             buildSet { for (i in 0 until arr.length()) add(arr.getString(i)) }
         }.getOrDefault(emptySet())
+    }
+
+    private fun parsePinnedTools(raw: String): List<ToolId> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    runCatching { enumValueOf<ToolId>(arr.getString(i)) }.getOrNull()?.let { add(it) }
+                }
+            }.distinct()
+        }.getOrDefault(emptyList())
     }
 
     private fun parseProfiles(raw: String): List<ProfileConfig> {

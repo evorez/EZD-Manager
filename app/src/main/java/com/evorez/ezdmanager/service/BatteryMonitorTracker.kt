@@ -195,18 +195,16 @@ object BatteryMonitorTracker {
         val avgIdleMa = if (idleMaCount > 0) (idleMaSum / idleMaCount).toInt()
         else if (!isCharging && !isScreenOn) abs(currentMa) else 0
 
-        val activeRate = when {
-            activeLevelDrop > 0f && activeTimeForRateMs >= 60_000L ->
-                (activeLevelDrop / (activeTimeForRateMs / 3_600_000f)).coerceIn(0f, 100f)
-            avgActiveMa > 0 -> ((avgActiveMa / 4500f) * 100f).coerceIn(0f, 100f)
-            else -> 0f
-        }
-        val idleRate = when {
-            idleLevelDrop > 0f && idleTimeForRateMs >= 60_000L ->
-                (idleLevelDrop / (idleTimeForRateMs / 3_600_000f)).coerceIn(0f, 60f)
-            avgIdleMa > 0 -> ((avgIdleMa / 4500f) * 100f).coerceIn(0f, 60f)
-            else -> 0f
-        }
+        val activeHistoryReady = activeLevelDrop > 0f && activeTimeForRateMs >= 60_000L
+        val idleHistoryReady = idleLevelDrop > 0f && idleTimeForRateMs >= 60_000L
+
+        val activeRate = if (activeHistoryReady) {
+            (activeLevelDrop / (activeTimeForRateMs / 3_600_000f)).coerceIn(0f, 100f)
+        } else 0f
+
+        val idleRate = if (idleHistoryReady) {
+            (idleLevelDrop / (idleTimeForRateMs / 3_600_000f)).coerceIn(0f, 60f)
+        } else 0f
 
         val deepSleepMs = (nowElapsed - nowUptime).coerceAtLeast(0L)
         val deepPct = if (nowElapsed > 0L) ((deepSleepMs.toFloat() / nowElapsed.toFloat()) * 100f).coerceIn(0f, 100f) else 0f
@@ -222,6 +220,8 @@ object BatteryMonitorTracker {
             chargeRatePctPerHr = chargeRate,
             activeDrainPctPerHr = activeRate,
             idleDrainPctPerHr = idleRate,
+            activeHistoryReady = activeHistoryReady,
+            idleHistoryReady = idleHistoryReady,
             avgActiveMa = avgActiveMa,
             avgIdleMa = avgIdleMa,
             screenOnMs = screenOnAccumMs,
@@ -252,12 +252,13 @@ object BatteryMonitorTracker {
     fun notificationLine(stats: BatteryMonitorStats): String {
         val signMa = if (stats.currentMa >= 0) "+${stats.currentMa}mA" else "${stats.currentMa}mA"
         val watts = String.format(Locale.US, "%.1fW", stats.powerWatts)
-        val rateText = if (stats.isCharging) {
-            "Chg ${stats.chargeSource}"
-        } else {
-            val drainStr = String.format(Locale.US, "%.1f%%/h", stats.activeDrainPctPerHr)
-            "Drain $drainStr"
-        }
-        return "${stats.levelPercent}% · $signMa ($watts) · $rateText · SoT ${formatDurationShort(stats.screenOnMs)} · Sleep ${stats.deepSleepPercent.toInt()}%"
+        val phase = if (stats.isCharging) "while charging" else "while discharging"
+        val idStr = if (stats.idleHistoryReady) {
+            String.format(Locale.US, "%.1f%%/h", stats.idleDrainPctPerHr)
+        } else "--"
+        val adStr = if (stats.activeHistoryReady) {
+            String.format(Locale.US, "%.1f%%", stats.activeDrainPctPerHr)
+        } else "--"
+        return "$signMa ($watts) $phase • ID $idStr • AD $adStr           ~𝙴𝚟𝚘𝚛𝚎𝚣🪽"
     }
 }

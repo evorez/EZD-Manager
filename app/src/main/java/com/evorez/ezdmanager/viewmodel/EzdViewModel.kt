@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
 import android.app.usage.UsageStatsManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,6 +16,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.evorez.ezdmanager.BuildConfig
 import com.evorez.ezdmanager.backup.BackupExportOptions
 import com.evorez.ezdmanager.backup.BackupReport
 import com.evorez.ezdmanager.backup.BackupRestoreManager
@@ -21,14 +24,19 @@ import com.evorez.ezdmanager.data.SettingsDataStore
 import com.evorez.ezdmanager.data.UserSettings
 import com.evorez.ezdmanager.hardware.CpuGpuRepository
 import com.evorez.ezdmanager.hardware.DisplayTouchRepository
+import com.evorez.ezdmanager.hardware.EngineTuningManager
+import com.evorez.ezdmanager.hardware.HardwareProbe
+import com.evorez.ezdmanager.hardware.HardwareProbeReport
 import com.evorez.ezdmanager.hardware.KernelTweaksRepository
 import com.evorez.ezdmanager.hardware.RootModulesAndPropRepository
 import com.evorez.ezdmanager.hardware.SystemToolsRepository
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.profiles.ProfileRepository
 import com.evorez.ezdmanager.root.CommandBridge
+import com.evorez.ezdmanager.root.HwResult
 import com.evorez.ezdmanager.root.RootShellManager
 import com.evorez.ezdmanager.root.ShizukuManager
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.service.BatteryMonitorTracker
 import com.evorez.ezdmanager.service.BootGuardManager
 import com.evorez.ezdmanager.service.DaemonBridge
@@ -55,7 +63,15 @@ data class EzdUiState(
     val overview: DeviceOverview = DeviceOverview(),
     val cpuPolicies: List<CpuPolicy> = emptyList(),
     val cpuCores: List<CpuCore> = emptyList(),
+    val cpuResult: HwResult = HwResult.PermissionDenied,
+    val cpuReason: String = "Probing CPU policy nodes…",
+    val cpuPathsTried: List<String> = emptyList(),
     val gpuState: GpuState = GpuState(),
+    val probeReport: HardwareProbeReport? = null,
+    val isRefreshingProbe: Boolean = false,
+    val diagnosticsExportPath: String = "",
+    val diagnosticsExportError: String = "",
+    val savedEzdBackups: List<String> = emptyList(),
     val displayState: DisplayState = DisplayState(),
     val touchState: TouchState = TouchState(),
     val networkState: NetworkState = NetworkState(),
@@ -96,7 +112,10 @@ data class EzdUiState(
     val buildPropBackups: List<BuildPropBackupInfo> = emptyList(),
     val bootGuardState: BootGuardState = BootGuardState(),
     val releaseInfo: GitHubReleaseInfo = GitHubReleaseInfo(),
-    val checkingUpdate: Boolean = false
+    val checkingUpdate: Boolean = false,
+    val beastReport: BeastExecutionReport? = null,
+    val thermalTelemetry: ThermalTelemetry = ThermalTelemetry(),
+    val fastChargeState: FastChargeState = FastChargeState()
 )
 
 class EzdViewModel(application: Application) : AndroidViewModel(application) {
@@ -135,6 +154,7 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         observeDataStore()
         initializeDaemonAndRoot()
         refreshLocalAppBackups()
+        refreshSavedEzdBackups()
     }
 
     private fun observeDataStore() {
@@ -142,7 +162,18 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
             store.settingsFlow.collect { s ->
                 _ui.update { cur ->
                     val eff = ShizukuManager.resolveEffectiveMode(s.workMode, cur.rootStatus, cur.shizukuStatus)
-                    cur.copy(settings = s, effectivePrivilegeMode = eff)
+                    cur.copy(
+                        settings = s,
+                        effectivePrivilegeMode = eff,
+                        beastReport = if (s.activeProfileId == GameProfileId.BEAST.id) cur.beastReport else null
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            DaemonBridge.thermal.collect { t ->
+                if (t.lastUpdatedMs > 0L) {
+                    _ui.update { it.copy(thermalTelemetry = t) }
                 }
             }
         }
@@ -213,28 +244,39 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         pollingJob = viewModelScope.launch(Dispatchers.Default) {
             var tick = 0
             while (isActive) {
-                val overview = cpuGpuRepo.readDeviceOverview()
+                val overview = cpuGpuRepo.sampleOverviewAsync()
                 val batterySnap = BatteryMonitorTracker.sampleNow(ctx)
                 val rootGranted = isRootActive()
                 val tool = _ui.value.activeTool
                 val heavyDue = tick % 3 == 0 || tool == ToolId.CPU_GPU_CONTROL || tool == ToolId.DISPLAY
 
-                val policies = if (rootGranted && heavyDue) cpuGpuRepo.scanCpuPolicies() else _ui.value.cpuPolicies
-                val cores = if (rootGranted && tool == ToolId.CPU_GPU_CONTROL) cpuGpuRepo.scanCpuCores() else _ui.value.cpuCores
-                val gpu = if (rootGranted && heavyDue) cpuGpuRepo.scanGpu() else _ui.value.gpuState
+                val probe = if (heavyDue) {
+                    HardwareProbe.probe(ctx, forceRefresh = tool == ToolId.CPU_GPU_CONTROL && tick > 0)
+                } else {
+                    HardwareProbe.getCached()
+                }
                 val display = if (heavyDue) displayTouchRepo.readDisplayState(rootGranted) else _ui.value.displayState
+                val thermal = HardwareProbe.probeThermalNow(ctx)
+                val fastCharge = if (tool == ToolId.FAST_CHARGE) {
+                    HardwareProbe.probeFastCharge(ctx, suGranted = rootGranted)
+                } else {
+                    probe?.fastChargeState ?: _ui.value.fastChargeState
+                }
 
                 _ui.update { current ->
                     current.copy(
                         overview = overview,
                         batteryMonitorStats = batterySnap,
-                        cpuPolicies = if (rootGranted) policies else emptyList(),
-                        cpuCores = if (rootGranted) cores else emptyList(),
-                        gpuState = if (rootGranted) gpu else GpuState(
-                            supported = false,
-                            reason = "GPU frequency nodes require Root privilege."
-                        ),
+                        cpuPolicies = probe?.cpuPolicies ?: current.cpuPolicies,
+                        cpuCores = probe?.cpuCores ?: current.cpuCores,
+                        cpuResult = probe?.cpuResult ?: current.cpuResult,
+                        cpuReason = probe?.cpuReason ?: current.cpuReason,
+                        cpuPathsTried = probe?.cpuPathsTried ?: current.cpuPathsTried,
+                        gpuState = probe?.gpuState ?: current.gpuState,
+                        probeReport = probe ?: current.probeReport,
                         displayState = display,
+                        thermalTelemetry = thermal,
+                        fastChargeState = fastCharge,
                         overlayGranted = if (tick % 3 == 0) Settings.canDrawOverlays(ctx) else current.overlayGranted,
                         usageAccessGranted = if (tick % 3 == 0) hasUsageStatsPermission() else current.usageAccessGranted,
                         dndPolicyGranted = if (tick % 3 == 0) hasDndPermission() else current.dndPolicyGranted,
@@ -288,6 +330,12 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
             val shStatus = ShizukuManager.refreshStatus(ctx)
             DaemonBridge.update { it.copy(rootGranted = status == RootStatus.GRANTED) }
             val edlOk = if (status == RootStatus.GRANTED) sysToolsRepo.isEdlVerifiedSupported() else false
+            val rootGranted = status == RootStatus.GRANTED
+            val shizukuGranted = shStatus == ShizukuStatus.GRANTED
+            val guardAlert = EngineTuningManager.checkAndRecoverFromCrashOrReboot(ctx, rootGranted, shizukuGranted)
+            if (!guardAlert.isNullOrBlank()) {
+                pushNotification(guardAlert, title = "EZD Safety Guard")
+            }
             _ui.update { cur ->
                 val eff = ShizukuManager.resolveEffectiveMode(cur.settings.workMode, status, shStatus)
                 cur.copy(
@@ -296,6 +344,7 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
                     effectivePrivilegeMode = eff,
                     edlSupported = edlOk,
                     statusBanner = when {
+                        !guardAlert.isNullOrBlank() -> guardAlert
                         status == RootStatus.GRANTED -> ""
                         shStatus == ShizukuStatus.GRANTED -> "Running in Shizuku ADB mode (Rootless tuning enabled)."
                         status == RootStatus.DENIED && forceFresh -> "Root denied. Grant su or enable Shizuku in Work Mode."
@@ -307,36 +356,53 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshAllHardware() {
+    fun refreshAllHardware(forceProbe: Boolean = false) {
         viewModelScope.launch(Dispatchers.Default) {
-            val rootGranted = isRootActive()
-            val shizukuGranted = isShizukuActive()
-            val overview = cpuGpuRepo.readDeviceOverview()
-            val policies = if (rootGranted) cpuGpuRepo.scanCpuPolicies() else emptyList()
-            val cores = if (rootGranted) cpuGpuRepo.scanCpuCores() else emptyList()
-            val gpu = if (rootGranted) cpuGpuRepo.scanGpu() else GpuState(false, "Requires Root access")
-            val display = displayTouchRepo.readDisplayState(rootGranted)
-            val touch = displayTouchRepo.scanTouch(shizukuGranted)
-            val net = sysToolsRepo.scanNetwork(vpnActive = vpnActive.value)
-            val spoof = if (rootGranted) sysToolsRepo.scanSpoofState() else SpoofState(statusMessage = "Requires Root / resetprop")
-            val edlOk = if (rootGranted) sysToolsRepo.isEdlVerifiedSupported() else false
-            _ui.update {
-                it.copy(
-                    overview = overview,
-                    cpuPolicies = policies,
-                    cpuCores = cores,
-                    gpuState = gpu,
-                    displayState = display,
-                    touchState = touch,
-                    networkState = net,
-                    spoofState = spoof,
-                    edlSupported = edlOk,
-                    overlayGranted = Settings.canDrawOverlays(ctx),
-                    usageAccessGranted = hasUsageStatsPermission(),
-                    dndPolicyGranted = hasDndPermission(),
-                    writeSettingsGranted = Settings.System.canWrite(ctx),
-                    notificationsGranted = hasPostNotificationsPermission()
-                )
+            if (forceProbe) {
+                _ui.update { it.copy(isRefreshingProbe = true) }
+            }
+            try {
+                val rootGranted = isRootActive()
+                val shizukuGranted = isShizukuActive()
+                val probe = HardwareProbe.probe(ctx, forceRefresh = forceProbe)
+                val overview = cpuGpuRepo.sampleOverviewAsync()
+                val zram = kernelTweaksRepo.scanZramVm(forceRefresh = forceProbe)
+                val ioT = kernelTweaksRepo.scanIoThermalUi(rootGranted, forceRefresh = forceProbe)
+                val display = displayTouchRepo.readDisplayState(rootGranted)
+                val touch = displayTouchRepo.scanTouch(shizukuGranted)
+                val net = sysToolsRepo.scanNetwork(vpnActive = vpnActive.value)
+                val spoof = if (rootGranted) sysToolsRepo.scanSpoofState() else SpoofState(statusMessage = "Requires Root / resetprop")
+                val edlOk = if (rootGranted) sysToolsRepo.isEdlVerifiedSupported() else false
+                _ui.update {
+                    it.copy(
+                        overview = overview,
+                        cpuPolicies = probe.cpuPolicies,
+                        cpuCores = probe.cpuCores,
+                        cpuResult = probe.cpuResult,
+                        cpuReason = probe.cpuReason,
+                        cpuPathsTried = probe.cpuPathsTried,
+                        gpuState = probe.gpuState,
+                        zramVmState = zram,
+                        ioThermalUiState = ioT,
+                        probeReport = probe,
+                        displayState = display,
+                        touchState = touch,
+                        networkState = net,
+                        spoofState = spoof,
+                        edlSupported = edlOk,
+                        thermalTelemetry = probe.thermalTelemetry,
+                        fastChargeState = probe.fastChargeState,
+                        overlayGranted = Settings.canDrawOverlays(ctx),
+                        usageAccessGranted = hasUsageStatsPermission(),
+                        dndPolicyGranted = hasDndPermission(),
+                        writeSettingsGranted = Settings.System.canWrite(ctx),
+                        notificationsGranted = hasPostNotificationsPermission()
+                    )
+                }
+            } finally {
+                if (forceProbe) {
+                    _ui.update { it.copy(isRefreshingProbe = false) }
+                }
             }
         }
     }
@@ -354,56 +420,83 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     fun setCpuFrequencyRange(policy: CpuPolicy, newMinKhz: Long?, newMaxKhz: Long?) {
         runAction {
             val (_, msg) = cpuGpuRepo.setCpuFrequencyRange(policy, newMinKhz, newMaxKhz)
-            val updated = cpuGpuRepo.scanCpuPolicies()
-            _ui.update { it.copy(cpuPolicies = updated, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update {
+                it.copy(
+                    cpuPolicies = probe.cpuPolicies,
+                    cpuResult = probe.cpuResult,
+                    cpuReason = probe.cpuReason,
+                    cpuPathsTried = probe.cpuPathsTried,
+                    probeReport = probe,
+                    statusBanner = msg
+                )
+            }
         }
     }
 
     fun setCpuGovernor(policy: CpuPolicy, governor: String) {
         runAction {
             val (_, msg) = cpuGpuRepo.setGovernor(policy, governor)
-            val updated = cpuGpuRepo.scanCpuPolicies()
-            _ui.update { it.copy(cpuPolicies = updated, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update {
+                it.copy(
+                    cpuPolicies = probe.cpuPolicies,
+                    cpuResult = probe.cpuResult,
+                    cpuReason = probe.cpuReason,
+                    cpuPathsTried = probe.cpuPathsTried,
+                    probeReport = probe,
+                    statusBanner = msg
+                )
+            }
         }
     }
 
     fun resetCpuPolicy(policy: CpuPolicy) {
         runAction {
             val (_, msg) = cpuGpuRepo.resetPolicy(policy)
-            val updated = cpuGpuRepo.scanCpuPolicies()
-            _ui.update { it.copy(cpuPolicies = updated, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update {
+                it.copy(
+                    cpuPolicies = probe.cpuPolicies,
+                    cpuResult = probe.cpuResult,
+                    cpuReason = probe.cpuReason,
+                    cpuPathsTried = probe.cpuPathsTried,
+                    probeReport = probe,
+                    statusBanner = msg
+                )
+            }
         }
     }
 
     fun toggleCpuCore(core: CpuCore, online: Boolean) {
         runAction {
             val (_, msg) = cpuGpuRepo.setCoreOnline(core, online)
-            val cores = cpuGpuRepo.scanCpuCores()
-            _ui.update { it.copy(cpuCores = cores, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update { it.copy(cpuCores = probe.cpuCores, probeReport = probe, statusBanner = msg) }
         }
     }
 
     fun setGpuFrequency(minMhz: Long?, maxMhz: Long?) {
         runAction {
             val (_, msg) = cpuGpuRepo.setGpuFrequency(_ui.value.gpuState, minMhz, maxMhz)
-            val gpu = cpuGpuRepo.scanGpu()
-            _ui.update { it.copy(gpuState = gpu, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update { it.copy(gpuState = probe.gpuState, probeReport = probe, statusBanner = msg) }
         }
     }
 
     fun setGpuGovernor(governor: String) {
         runAction {
             val (_, msg) = cpuGpuRepo.setGpuGovernor(_ui.value.gpuState, governor)
-            val gpu = cpuGpuRepo.scanGpu()
-            _ui.update { it.copy(gpuState = gpu, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update { it.copy(gpuState = probe.gpuState, probeReport = probe, statusBanner = msg) }
         }
     }
 
     fun resetGpu() {
         runAction {
             val (_, msg) = cpuGpuRepo.resetGpu(_ui.value.gpuState)
-            val gpu = cpuGpuRepo.scanGpu()
-            _ui.update { it.copy(gpuState = gpu, statusBanner = msg) }
+            val probe = HardwareProbe.probe(ctx, forceRefresh = true)
+            _ui.update { it.copy(gpuState = probe.gpuState, probeReport = probe, statusBanner = msg) }
         }
     }
 
@@ -412,17 +505,81 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
 
     fun applyProfile(profile: ProfileConfig) {
         runAction {
-            store.setActiveProfileId(profile.id)
-            val (_, msg) = profileRepo.applyProfile(
-                profile = profile,
-                rootAvailable = isRootActive(),
-                shizukuAvailable = isShizukuActive()
-            )
-            EzdProfileWidgetProvider.updateAllWidgets(ctx, profile.id)
-            pushNotification(msg)
-            refreshAllHardware()
-            _ui.update { it.copy(statusBanner = msg) }
+            val wasBeast = _ui.value.settings.activeProfileId == GameProfileId.BEAST.id
+            val rootOk = isRootActive()
+            val shizukuOk = isShizukuActive()
+            if (profile.isBeastMode || profile.id == GameProfileId.BEAST.id) {
+                val report = profileRepo.activateBeastMode(rootAvailable = rootOk, shizukuAvailable = shizukuOk)
+                store.setActiveProfileId(GameProfileId.BEAST.id)
+                EzdProfileWidgetProvider.updateAllWidgets(ctx, GameProfileId.BEAST.id)
+                DaemonBridge.requestSync()
+                pushNotification(report.summary, title = "Beast Mode Active")
+                _ui.update { it.copy(beastReport = report, statusBanner = report.summary) }
+                refreshAllHardware(forceProbe = true)
+            } else {
+                store.setActiveProfileId(profile.id)
+                val (_, msg) = if (wasBeast && profile.id == GameProfileId.BALANCED.id) {
+                    profileRepo.deactivateBeastMode(rootAvailable = rootOk, shizukuAvailable = shizukuOk)
+                } else {
+                    profileRepo.applyProfile(profile, rootAvailable = rootOk, shizukuAvailable = shizukuOk)
+                }
+                EzdProfileWidgetProvider.updateAllWidgets(ctx, profile.id)
+                DaemonBridge.requestSync()
+                pushNotification(msg)
+                _ui.update { it.copy(beastReport = null, statusBanner = msg) }
+                refreshAllHardware(forceProbe = true)
+            }
         }
+    }
+
+    fun toggleBeastMode() {
+        val isBeast = _ui.value.settings.activeProfileId == GameProfileId.BEAST.id
+        val targetId = if (isBeast) GameProfileId.BALANCED.id else GameProfileId.BEAST.id
+        val prof = ProfileRepository.builtInProfiles().first { it.id == targetId }
+        applyProfile(prof)
+    }
+
+    fun setBeastThermalLimits(batteryLimitC: Float? = null, socLimitC: Float? = null) {
+        viewModelScope.launch {
+            store.setBeastThermalConfig(batteryLimitC = batteryLimitC, socLimitC = socLimitC)
+            DaemonBridge.requestSync()
+        }
+    }
+
+    fun setBeastIgnoreThermalLimits(ignore: Boolean) {
+        viewModelScope.launch {
+            store.setBeastThermalConfig(ignoreLimits = ignore)
+            DaemonBridge.requestSync()
+            _ui.update {
+                it.copy(
+                    statusBanner = if (ignore) {
+                        "Warning: Thermal Watchdog limit bypass enabled for Beast Mode."
+                    } else {
+                        "Thermal Watchdog protection restored."
+                    }
+                )
+            }
+        }
+    }
+
+    // --- Dedicated Fast Charge Controls (strictly separate from Beast Mode) ---
+    fun refreshFastCharge() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val fc = HardwareProbe.probeFastCharge(ctx, suGranted = isRootActive())
+            _ui.update { it.copy(fastChargeState = fc) }
+        }
+    }
+
+    fun applyFastChargeLimit(limitMa: Int) = runAction {
+        val (_, msg) = EngineTuningManager.setFastChargeCurrentLimit(_ui.value.fastChargeState, limitMa)
+        val fc = HardwareProbe.probeFastCharge(ctx, suGranted = isRootActive())
+        _ui.update { it.copy(fastChargeState = fc, statusBanner = msg) }
+    }
+
+    fun toggleForceFastCharge(enable: Boolean) = runAction {
+        val (_, msg) = EngineTuningManager.toggleForceFastCharge(_ui.value.fastChargeState, enable)
+        val fc = HardwareProbe.probeFastCharge(ctx, suGranted = isRootActive())
+        _ui.update { it.copy(fastChargeState = fc, statusBanner = msg) }
     }
 
     fun applyProfile(profileId: String) {
@@ -584,7 +741,15 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             store.setAudioFlags(bassEnabled = enabled)
             val s = _ui.value.audioState.copy(bassEnabled = enabled)
-            sysToolsRepo.applyAudioParams(s.bandLevels, s.bassStrength, s.loudnessGainMb, enabled, s.equalizerEnabled, s.bassFrequencyFocus)
+            sysToolsRepo.applyAudioParams(
+                levels = s.bandLevels,
+                bassStrength = s.bassStrength,
+                loudnessMb = s.loudnessGainMb,
+                bassEnabled = enabled,
+                eqEnabled = s.equalizerEnabled,
+                increaseLoudnessEnabled = s.increaseLoudnessEnabled,
+                bassFocus = s.bassFrequencyFocus
+            )
             _ui.update { it.copy(audioState = s, statusBanner = "Bass Enhancer ${if (enabled) "enabled" else "muted"}") }
         }
     }
@@ -593,8 +758,38 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             store.setAudioFlags(eqEnabled = enabled)
             val s = _ui.value.audioState.copy(equalizerEnabled = enabled)
-            sysToolsRepo.applyAudioParams(s.bandLevels, s.bassStrength, s.loudnessGainMb, s.bassEnabled, enabled, s.bassFrequencyFocus)
+            sysToolsRepo.applyAudioParams(
+                levels = s.bandLevels,
+                bassStrength = s.bassStrength,
+                loudnessMb = s.loudnessGainMb,
+                bassEnabled = s.bassEnabled,
+                eqEnabled = enabled,
+                increaseLoudnessEnabled = s.increaseLoudnessEnabled,
+                bassFocus = s.bassFrequencyFocus
+            )
             _ui.update { it.copy(audioState = s, statusBanner = "Equalizer ${if (enabled) "enabled" else "bypassed"}") }
+        }
+    }
+
+    fun toggleIncreaseLoudness(enabled: Boolean) {
+        viewModelScope.launch {
+            store.setAudioFlags(increaseLoudness = enabled)
+            val s = _ui.value.audioState.copy(increaseLoudnessEnabled = enabled)
+            sysToolsRepo.applyAudioParams(
+                levels = s.bandLevels,
+                bassStrength = s.bassStrength,
+                loudnessMb = s.loudnessGainMb,
+                bassEnabled = s.bassEnabled,
+                eqEnabled = s.equalizerEnabled,
+                increaseLoudnessEnabled = enabled,
+                bassFocus = s.bassFrequencyFocus
+            )
+            _ui.update {
+                it.copy(
+                    audioState = s,
+                    statusBanner = if (enabled) "Loudness Boost active (+${s.loudnessGainMb} mB)" else "Loudness Boost off"
+                )
+            }
         }
     }
 
@@ -602,7 +797,15 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             store.setAudioFlags(bassFocus = focus)
             val s = _ui.value.audioState.copy(bassFrequencyFocus = focus)
-            sysToolsRepo.applyAudioParams(s.bandLevels, s.bassStrength, s.loudnessGainMb, s.bassEnabled, s.equalizerEnabled, focus)
+            sysToolsRepo.applyAudioParams(
+                levels = s.bandLevels,
+                bassStrength = s.bassStrength,
+                loudnessMb = s.loudnessGainMb,
+                bassEnabled = s.bassEnabled,
+                eqEnabled = s.equalizerEnabled,
+                increaseLoudnessEnabled = s.increaseLoudnessEnabled,
+                bassFocus = focus
+            )
             _ui.update { it.copy(audioState = s, statusBanner = "Bass frequency focus: $focus") }
         }
     }
@@ -616,14 +819,24 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateAudioManual(levels: List<Int>, bass: Int, loud: Int) {
         val cur = _ui.value.audioState
-        sysToolsRepo.applyAudioParams(levels, bass, loud, cur.bassEnabled, cur.equalizerEnabled, cur.bassFrequencyFocus)
+        val clampedLoud = loud.coerceIn(0, 2400)
+        sysToolsRepo.applyAudioParams(
+            levels = levels,
+            bassStrength = bass,
+            loudnessMb = clampedLoud,
+            bassEnabled = cur.bassEnabled,
+            eqEnabled = cur.equalizerEnabled,
+            increaseLoudnessEnabled = cur.increaseLoudnessEnabled,
+            bassFocus = cur.bassFrequencyFocus
+        )
+        viewModelScope.launch { store.setAudioFlags(loudnessGainMb = clampedLoud) }
         _ui.update {
             it.copy(
                 audioState = it.audioState.copy(
                     activePreset = "Custom",
                     bandLevels = levels,
                     bassStrength = bass,
-                    loudnessGainMb = loud
+                    loudnessGainMb = clampedLoud
                 )
             )
         }
@@ -821,10 +1034,64 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Backup & Restore (Phase 11) ---
+    fun refreshSavedEzdBackups() {
+        viewModelScope.launch {
+            val list = backupManager.listSavedEzdBackups()
+            _ui.update { it.copy(savedEzdBackups = list) }
+        }
+    }
+
+    fun exportEncryptedBackupToDownloads(options: BackupExportOptions) {
+        runAction {
+            val report = backupManager.createEncryptedBackupToDownloads(options, _ui.value.rootStatus)
+            val list = backupManager.listSavedEzdBackups()
+            _ui.update {
+                it.copy(
+                    backupReport = report,
+                    savedEzdBackups = list,
+                    statusBanner = report.summary
+                )
+            }
+        }
+    }
+
     fun exportEncryptedBackup(uri: Uri, options: BackupExportOptions) {
         runAction {
             val report = backupManager.createEncryptedBackup(uri, options, _ui.value.rootStatus)
             _ui.update { it.copy(backupReport = report, statusBanner = report.summary) }
+        }
+    }
+
+    fun inspectSavedEzdBackup(filePath: String, passphrase: String) {
+        runAction {
+            val res = backupManager.inspectBackupFile(filePath, passphrase)
+            res.onSuccess { (preview, payload) ->
+                _ui.update {
+                    it.copy(
+                        backupPreview = preview,
+                        pendingRestorePayload = payload,
+                        backupReport = null,
+                        statusBanner = "Archive verified (SHA-256 valid)"
+                    )
+                }
+            }.onFailure { err ->
+                val reason = err.message ?: "Failed to inspect backup archive"
+                _ui.update {
+                    it.copy(
+                        backupPreview = null,
+                        pendingRestorePayload = null,
+                        backupReport = BackupReport(
+                            success = false,
+                            summary = "Backup verification failed.",
+                            backedUpItems = emptyList(),
+                            skippedItems = emptyList(),
+                            filePath = filePath,
+                            failureReason = reason
+                        ),
+                        statusBanner = reason
+                    )
+                }
+            }
         }
     }
 
@@ -836,19 +1103,42 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         backupPreview = preview,
                         pendingRestorePayload = payload,
+                        backupReport = null,
                         statusBanner = if (preview.checksumValid) "Archive verified (SHA-256 valid)" else "Warning: SHA-256 integrity mismatch"
                     )
                 }
             }.onFailure { err ->
-                _ui.update { it.copy(statusBanner = err.message ?: "Failed to inspect backup archive") }
+                val reason = err.message ?: "Failed to inspect backup archive"
+                _ui.update {
+                    it.copy(
+                        backupPreview = null,
+                        pendingRestorePayload = null,
+                        backupReport = BackupReport(
+                            success = false,
+                            summary = "Backup verification failed.",
+                            backedUpItems = emptyList(),
+                            skippedItems = emptyList(),
+                            filePath = uri.toString(),
+                            failureReason = reason
+                        ),
+                        statusBanner = reason
+                    )
+                }
             }
         }
     }
 
     fun executeRestore(restoreEzdConfig: Boolean, restoreNetworkConfig: Boolean) {
         val payload = _ui.value.pendingRestorePayload ?: return
+        val sourcePath = _ui.value.backupPreview?.filePath.orEmpty()
         runAction {
-            val report = backupManager.restoreFromPayload(payload, restoreEzdConfig, restoreNetworkConfig, _ui.value.rootStatus)
+            val report = backupManager.restoreFromPayload(
+                payload = payload,
+                restoreEzdConfig = restoreEzdConfig,
+                restoreNetworkConfig = restoreNetworkConfig,
+                rootStatus = _ui.value.rootStatus,
+                sourcePath = sourcePath
+            )
             _ui.update {
                 it.copy(
                     backupReport = report,
@@ -866,7 +1156,7 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshLocalAppBackups() {
         viewModelScope.launch {
-            val list = backupManager.listLocalAppBackups()
+            val list = backupManager.listLocalAppBackups(rootGranted = isRootActive())
             _ui.update { it.copy(localAppBackups = list) }
         }
     }
@@ -874,7 +1164,7 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     fun runFullAppBackup(selectedApps: Set<String>, options: AppBackupOptions) {
         runAction {
             val report = backupManager.createLocalAppBackups(selectedApps, options, _ui.value.rootStatus)
-            val list = backupManager.listLocalAppBackups()
+            val list = backupManager.listLocalAppBackups(rootGranted = isRootActive())
             _ui.update { it.copy(backupReport = report, localAppBackups = list, statusBanner = report.summary) }
         }
     }
@@ -889,8 +1179,8 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteLocalAppBackup(record: LocalAppBackupRecord) {
         viewModelScope.launch {
-            backupManager.deleteLocalAppBackup(record)
-            val list = backupManager.listLocalAppBackups()
+            backupManager.deleteLocalAppBackup(record, rootGranted = isRootActive())
+            val list = backupManager.listLocalAppBackups(rootGranted = isRootActive())
             _ui.update { it.copy(localAppBackups = list, statusBanner = "Deleted backup for ${record.appLabel}") }
         }
     }
@@ -988,13 +1278,50 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     fun setAnimStyle(style: AppAnimStyle) = viewModelScope.launch { store.setAnimStyle(style) }
     fun setThemeMode(mode: ThemeMode) = viewModelScope.launch { store.setThemeMode(mode) }
     fun setThemeStyle(style: EzdThemeStyle) = viewModelScope.launch { store.setThemeStyle(style) }
-    fun setDockPosition(pos: DockPosition) = viewModelScope.launch { store.setDockPosition(pos) }
     fun setNotificationPrefs(prefs: NotificationPrefs) = viewModelScope.launch { store.setNotificationPrefs(prefs) }
     fun setAccentPreset(preset: AccentColorPreset) = viewModelScope.launch { store.setAccentPreset(preset) }
     fun setBlurIntensity(intensity: Float) = viewModelScope.launch { store.setBlurIntensity(intensity) }
-    fun setHapticsEnabled(enabled: Boolean) = viewModelScope.launch { store.setHapticsEnabled(enabled) }
     fun setReduceAnimations(reduce: Boolean) = viewModelScope.launch { store.setReduceAnimations(reduce) }
     fun setFloatingPillOpaque(opaque: Boolean) = viewModelScope.launch { store.setFloatingPillOpaque(opaque) }
+    fun setBackgroundTexture(preset: BackgroundTexturePreset) = viewModelScope.launch { store.setBackgroundTexture(preset) }
+    fun setBackgroundTextureOpacity(opacity: Float) = viewModelScope.launch { store.setBackgroundTextureOpacity(opacity) }
+    fun setAppFontStyle(font: AppFontStyle) = viewModelScope.launch { store.setAppFontStyle(font) }
+
+    fun pinToolToPill(tool: ToolId) {
+        viewModelScope.launch {
+            val current = _ui.value.settings.pinnedPillTools.toMutableList()
+            if (tool !in current) {
+                current.add(tool)
+                store.setPinnedPillTools(current)
+                _ui.update { it.copy(statusBanner = "Pinned ${tool.title} to Floating Pill") }
+            } else {
+                _ui.update { it.copy(statusBanner = "${tool.title} is already pinned") }
+            }
+        }
+    }
+
+    fun unpinToolFromPill(tool: ToolId) {
+        viewModelScope.launch {
+            val updated = _ui.value.settings.pinnedPillTools.filterNot { it == tool }
+            store.setPinnedPillTools(updated)
+            _ui.update { it.copy(statusBanner = "Removed ${tool.title} shortcut") }
+        }
+    }
+
+    fun movePinnedPillTool(tool: ToolId, delta: Int) {
+        viewModelScope.launch {
+            val list = _ui.value.settings.pinnedPillTools.toMutableList()
+            val idx = list.indexOf(tool)
+            if (idx >= 0) {
+                val target = (idx + delta).coerceIn(0, list.lastIndex)
+                if (target != idx) {
+                    list.removeAt(idx)
+                    list.add(target, tool)
+                    store.setPinnedPillTools(list)
+                }
+            }
+        }
+    }
 
     fun markNotificationsRead() {
         viewModelScope.launch {
@@ -1032,12 +1359,16 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
                         savedPreset = s.savedAudioPreset,
                         bassEnabled = s.audioBassEnabled,
                         eqEnabled = s.audioEqEnabled,
+                        increaseLoudnessEnabled = s.audioIncreaseLoudness,
+                        loudnessGainMb = s.audioLoudnessGainMb,
                         visualStyle = s.audioVisualStyle,
                         bassFocus = s.audioBassFocus
                     )
                     _ui.update { it.copy(audioState = audio) }
                 }
             }
+            ToolId.FAST_CHARGE -> refreshFastCharge()
+            ToolId.EZD_BACKUP -> refreshSavedEzdBackups()
             ToolId.APP_BACKUP -> refreshLocalAppBackups()
             ToolId.ZRAM_VM -> refreshZramVm()
             ToolId.KERNEL_TWEAKS -> refreshIoThermalUi()
@@ -1051,58 +1382,58 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     // --- ZRAM & VM Tweaks ---
     fun refreshZramVm() {
         viewModelScope.launch(Dispatchers.Default) {
-            val st = kernelTweaksRepo.scanZramVm(_ui.value.rootStatus == RootStatus.GRANTED)
-            _ui.update { it.copy(zramVmState = st) }
+            val st = kernelTweaksRepo.scanZramVm(forceRefresh = true)
+            _ui.update { it.copy(zramVmState = st, probeReport = HardwareProbe.getCached()) }
         }
     }
 
     fun applyZramConfig(sizeMb: Long, algorithm: String) = runAction {
         val (_, msg) = kernelTweaksRepo.applyZramConfig(sizeMb, algorithm)
-        val st = kernelTweaksRepo.scanZramVm(_ui.value.rootStatus == RootStatus.GRANTED)
-        _ui.update { it.copy(zramVmState = st, statusBanner = msg) }
+        val st = kernelTweaksRepo.scanZramVm(forceRefresh = true)
+        _ui.update { it.copy(zramVmState = st, probeReport = HardwareProbe.getCached(), statusBanner = msg) }
     }
 
     fun applyVmTweaks(swappiness: Int, vfsPressure: Int, dirtyRatio: Int, dirtyBgRatio: Int) = runAction {
         val (_, msg) = kernelTweaksRepo.applyVmTweaks(swappiness, vfsPressure, dirtyRatio, dirtyBgRatio)
-        val st = kernelTweaksRepo.scanZramVm(_ui.value.rootStatus == RootStatus.GRANTED)
-        _ui.update { it.copy(zramVmState = st, statusBanner = msg) }
+        val st = kernelTweaksRepo.scanZramVm(forceRefresh = true)
+        _ui.update { it.copy(zramVmState = st, probeReport = HardwareProbe.getCached(), statusBanner = msg) }
     }
 
     // --- I/O Scheduler, Read-Ahead, Thermal Profile, Animation Scale, GPU Renderer ---
     fun refreshIoThermalUi() {
         viewModelScope.launch(Dispatchers.Default) {
-            val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED)
-            _ui.update { it.copy(ioThermalUiState = st) }
+            val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED, forceRefresh = true)
+            _ui.update { it.copy(ioThermalUiState = st, probeReport = HardwareProbe.getCached()) }
         }
     }
 
     fun setIoScheduler(device: IoBlockDevice, scheduler: String) = runAction {
         val (_, msg) = kernelTweaksRepo.setIoScheduler(device, scheduler)
-        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED)
-        _ui.update { it.copy(ioThermalUiState = st, statusBanner = msg) }
+        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED, forceRefresh = true)
+        _ui.update { it.copy(ioThermalUiState = st, probeReport = HardwareProbe.getCached(), statusBanner = msg) }
     }
 
     fun setIoReadAhead(device: IoBlockDevice, kb: Int) = runAction {
         val (_, msg) = kernelTweaksRepo.setIoReadAhead(device, kb)
-        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED)
-        _ui.update { it.copy(ioThermalUiState = st, statusBanner = msg) }
+        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED, forceRefresh = true)
+        _ui.update { it.copy(ioThermalUiState = st, probeReport = HardwareProbe.getCached(), statusBanner = msg) }
     }
 
     fun applyThermalProfile(mode: ThermalProfileMode) = runAction {
         val (_, msg) = kernelTweaksRepo.applyThermalProfile(mode)
-        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED)
-        _ui.update { it.copy(ioThermalUiState = st, statusBanner = msg) }
+        val st = kernelTweaksRepo.scanIoThermalUi(_ui.value.rootStatus == RootStatus.GRANTED, forceRefresh = true)
+        _ui.update { it.copy(ioThermalUiState = st, probeReport = HardwareProbe.getCached(), statusBanner = msg) }
     }
 
     fun setSystemAnimationScale(scale: Float) = runAction {
         val (_, msg) = kernelTweaksRepo.setAnimationScale(scale, isRootActive(), isShizukuActive())
-        val st = kernelTweaksRepo.scanIoThermalUi(isRootActive())
+        val st = kernelTweaksRepo.scanIoThermalUi(isRootActive(), forceRefresh = true)
         _ui.update { it.copy(ioThermalUiState = st, statusBanner = msg) }
     }
 
     fun setGpuRenderer(mode: GpuRendererMode) = runAction {
         val (_, msg) = kernelTweaksRepo.setGpuRenderer(mode)
-        val st = kernelTweaksRepo.scanIoThermalUi(isRootActive())
+        val st = kernelTweaksRepo.scanIoThermalUi(isRootActive(), forceRefresh = true)
         _ui.update { it.copy(ioThermalUiState = st, statusBanner = msg) }
     }
 
@@ -1195,12 +1526,18 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
     fun checkForGitHubUpdates() {
         viewModelScope.launch {
             _ui.update { it.copy(checkingUpdate = true) }
-            val currentVer = runCatching {
-                ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "1.0.0"
-            }.getOrDefault("1.0.0")
-            val info = withContext(Dispatchers.IO) {
+            val currentVer = BuildConfig.VERSION_NAME
+            val rawInfo = withContext(Dispatchers.IO) {
                 modulesPropRepo.fetchLatestGitHubRelease(currentVer)
             }
+            val refinedMsg = when {
+                rawInfo.statusMessage.contains("no newer GitHub tag", ignoreCase = true) ->
+                    "No releases published yet on GitHub for evorez/EZD-Manager (installed v$currentVer)."
+                rawInfo.statusMessage.startsWith("Offline", ignoreCase = true) ->
+                    "No network connection or GitHub API unreachable — try again when online."
+                else -> rawInfo.statusMessage
+            }
+            val info = rawInfo.copy(statusMessage = refinedMsg)
             _ui.update {
                 it.copy(
                     releaseInfo = info,
@@ -1297,7 +1634,7 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    // --- Brand Logo 5-Tap Developer Easter Egg ---
+    // --- Brand Logo 7-Tap Author Profile Dialog ---
     fun recordBrandLogoTap(): Int {
         val now = System.currentTimeMillis()
         if (now - lastLogoTapMs > 3_000L) {
@@ -1305,10 +1642,10 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         }
         lastLogoTapMs = now
         logoTapCount++
-        if (logoTapCount >= 5) {
+        if (logoTapCount >= 7) {
             logoTapCount = 0
             _ui.update { it.copy(showDeveloperEggDialog = true) }
-            return 5
+            return 7
         }
         return logoTapCount
     }
@@ -1357,32 +1694,82 @@ class EzdViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { ctx.startActivity(intent) }
     }
 
+    fun exportAndCopyDiagnostics() {
+        runAction {
+            val report = HardwareProbe.probe(ctx, forceRefresh = true)
+            val diagText = HardwareProbe.buildDiagnosticsText(report)
+            withContext(Dispatchers.Main) {
+                runCatching {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("EZD Hardware Diagnostics", diagText))
+                }
+            }
+            val (ok, pathOrErr) = HardwareProbe.exportDiagnosticsToDownloads(ctx, report)
+            _ui.update {
+                it.copy(
+                    probeReport = report,
+                    cpuPolicies = report.cpuPolicies,
+                    cpuCores = report.cpuCores,
+                    cpuResult = report.cpuResult,
+                    cpuReason = report.cpuReason,
+                    cpuPathsTried = report.cpuPathsTried,
+                    gpuState = report.gpuState,
+                    zramVmState = report.zramVmState,
+                    diagnosticsExportPath = if (ok) pathOrErr else "",
+                    diagnosticsExportError = if (ok) "" else pathOrErr,
+                    statusBanner = if (ok) {
+                        "Copied diagnostics & saved to $pathOrErr"
+                    } else {
+                        "Copied diagnostics to clipboard (file save failed: $pathOrErr)"
+                    }
+                )
+            }
+        }
+    }
+
     fun buildDeviceReportText(): String {
         val s = _ui.value
         val ov = s.overview
+        val probe = s.probeReport
         return buildString {
             appendLine("EZD Manager — Device Information")
             appendLine("Device: ${ov.manufacturer} ${ov.model} (${ov.device})")
             appendLine("SoC / Board: ${ov.board} / ${ov.hardware}")
             appendLine("Android: ${ov.androidVersion} (API ${ov.sdkInt})")
-            appendLine("Kernel: ${ov.kernelVersion}")
+            appendLine("Kernel: ${probe?.kernelVersion?.ifBlank { ov.kernelVersion } ?: ov.kernelVersion}")
+            appendLine("SELinux: ${probe?.selinuxMode ?: "Unknown"}")
+            appendLine("Root: ${s.rootStatus.name} (${probe?.rootType ?: s.rootManagerType})")
             appendLine("RAM: ${ov.ramUsedMb} / ${ov.ramTotalMb} MB")
             appendLine("Battery: ${if (ov.batteryPercent >= 0) "${ov.batteryPercent}%" else "Unavailable"} (${ov.chargingStatus})")
-            appendLine("Root: ${s.rootStatus.name}")
-            appendLine("CPU Clusters: ${s.cpuPolicies.size}")
-            s.cpuPolicies.forEach { p ->
-                appendLine("  ${p.id} (CPUs ${p.cpus}): ${p.minKhz?.div(1000) ?: "?"}–${p.maxKhz?.div(1000) ?: "?"} MHz | Gov: ${p.currentGovernor}")
+            if (s.cpuPolicies.isNotEmpty()) {
+                appendLine("CPU Clusters (${s.cpuPolicies.size}, ${s.cpuResult.shortTag()}):")
+                s.cpuPolicies.forEach { p ->
+                    appendLine("  ${p.id} (CPUs ${p.cpus}): ${p.minKhz?.div(1000) ?: "?"}–${p.maxKhz?.div(1000) ?: "?"} MHz | Gov: ${p.currentGovernor}")
+                }
+            } else {
+                appendLine("CPU Probe: ${s.cpuResult.shortTag()} — ${s.cpuReason}")
+                if (s.cpuPathsTried.isNotEmpty()) {
+                    appendLine("CPU Paths Tried: ${s.cpuPathsTried.joinToString(", ")}")
+                }
             }
-            appendLine("GPU: ${if (s.gpuState.supported) "${s.gpuState.vendorHint} (${s.gpuState.currentMhz ?: "?"} MHz, ${s.gpuState.currentGovernor})" else "Not supported"}")
-            appendLine("Display: ${s.displayState.currentRefreshHz} Hz (${s.displayState.supportedModes.size} modes)")
+            val gpu = s.gpuState
+            if (gpu.supported) {
+                appendLine("GPU: ${gpu.vendorHint} (${gpu.currentMhz ?: "?"} MHz, ${gpu.currentGovernor})")
+            } else {
+                appendLine("GPU Probe: ${gpu.probeResult?.shortTag() ?: "Probing"} — ${gpu.reason}")
+                if (gpu.pathsTried.isNotEmpty()) {
+                    appendLine("GPU Paths Tried: ${gpu.pathsTried.joinToString(", ")}")
+                }
+            }
+            appendLine("Display: ${s.displayState.currentRefreshHz} Hz (peak ${s.displayState.peakHardwareHz} Hz, ${s.displayState.supportedModes.size} modes)")
         }
     }
 
     fun buildSearchIndex(): List<SearchEntry> {
         val items = mutableListOf<SearchEntry>()
-        items.add(SearchEntry("home_tab", "Home Dashboard", "Device overview, root & quick shortcuts", "Home", MainTab.HOME))
-        items.add(SearchEntry("perf_tab", "Performance Hub", "CPU & GPU clocks, governors, hotplug & profiles", "Performance", MainTab.PERF, targetTool = ToolId.CPU_GPU_CONTROL))
-        items.add(SearchEntry("cpu_gpu_tool", "CPU & GPU Engine", "Clusters, hotplug, clocks & governors", "Performance", MainTab.PERF, targetTool = ToolId.CPU_GPU_CONTROL))
+        items.add(SearchEntry("home_tab", "Home Dashboard", "Device overview, Beast Mode & quick shortcuts", "Home", MainTab.HOME))
+        items.add(SearchEntry("perf_tab", "Performance & CPU/GPU", "CPU & GPU clocks, governors, hotplug & profiles", "Tools", MainTab.TOOLS, targetTool = ToolId.CPU_GPU_CONTROL))
+        items.add(SearchEntry("settings_tab", "Settings & Updates", "Textures, fonts, appearance, daemon & GitHub updates", "Settings", MainTab.SETTINGS))
 
         ToolId.entries.forEach { tool ->
             items.add(SearchEntry("tool_${tool.name}", tool.title, tool.subtitle, "Tools", MainTab.TOOLS, targetTool = tool))

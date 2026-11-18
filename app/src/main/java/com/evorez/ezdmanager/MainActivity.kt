@@ -31,6 +31,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,17 +47,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.evorez.ezdmanager.model.*
+import com.evorez.ezdmanager.root.WorkModeManager
 import com.evorez.ezdmanager.ui.components.*
 import com.evorez.ezdmanager.ui.screens.*
 import com.evorez.ezdmanager.ui.theme.EzdTheme
@@ -125,6 +132,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EzdRootApp(vm: EzdViewModel) {
     val state by vm.ui.collectAsStateWithLifecycle()
@@ -165,21 +173,42 @@ private fun EzdRootApp(vm: EzdViewModel) {
     }
 
     val tabs = MainTab.entries
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { tabs.size })
+    var savedPage by rememberSaveable { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(
+        initialPage = savedPage.coerceIn(0, tabs.lastIndex),
+        pageCount = { tabs.size }
+    )
+    LaunchedEffect(pagerState.currentPage) {
+        savedPage = pagerState.currentPage
+    }
+
+    val homeScroll = rememberScrollState()
+    val toolsScroll = rememberScrollState()
+    val settingsScroll = rememberScrollState()
     val appsListState = androidx.compose.foundation.lazy.rememberLazyListState()
     var pendingAppPkg by remember { mutableStateOf<String?>(null) }
     var splashDone by rememberSaveable { mutableStateOf(false) }
 
+    var draggedTool by remember { mutableStateOf<ToolId?>(null) }
+    var dragPointerRoot by remember { mutableStateOf(Offset.Zero) }
+    var pillBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var containerOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+
     val handleBrandLogoTap: () -> Unit = {
         val count = vm.recordBrandLogoTap()
-        if (count in 3..4) {
-            Toast.makeText(context, "${5 - count} step(s) away from Developer Mode", Toast.LENGTH_SHORT).show()
+        if (count in 4..6) {
+            Toast.makeText(context, "${7 - count} step(s) away from Reporting & Requesting", Toast.LENGTH_SHORT).show()
         }
     }
 
     val activeTool = state.activeTool
-    val dockPos = state.settings.dockPosition
-    val currentScroll = if (tabs.getOrNull(pagerState.currentPage) == MainTab.APPS) appsListState.firstVisibleItemScrollOffset.toFloat() else 0f
+    val currentScroll = when (tabs.getOrNull(pagerState.currentPage)) {
+        MainTab.HOME -> homeScroll.value.toFloat()
+        MainTab.TOOLS -> toolsScroll.value.toFloat()
+        MainTab.APPS -> appsListState.firstVisibleItemScrollOffset.toFloat()
+        MainTab.SETTINGS -> settingsScroll.value.toFloat()
+        null -> 0f
+    }
     val collapseFraction = (currentScroll / 140f).coerceIn(0f, 1f)
 
     BackHandler(
@@ -188,7 +217,6 @@ private fun EzdRootApp(vm: EzdViewModel) {
             state.showNotificationsSheet ||
             state.showDeviceDetails ||
             state.showDeveloperEggDialog ||
-            state.showSettingsScreen ||
             activeTool != null ||
             pagerState.currentPage != 0
     ) {
@@ -199,7 +227,6 @@ private fun EzdRootApp(vm: EzdViewModel) {
             state.showNotificationsSheet -> vm.setShowNotificationsSheet(false)
             state.showDeviceDetails -> vm.setShowDeviceDetails(false)
             activeTool != null -> vm.openTool(null)
-            state.showSettingsScreen -> vm.setShowSettingsScreen(false)
             pagerState.currentPage != 0 -> scope.launch {
                 pagerState.animateScrollToPage(0, animationSpec = ColorOsMotion.fluidSpring())
             }
@@ -211,8 +238,10 @@ private fun EzdRootApp(vm: EzdViewModel) {
         themeStyle = state.settings.themeStyle,
         accentPreset = state.settings.accentPreset,
         blurIntensity = state.settings.blurIntensity,
-        hapticsEnabled = state.settings.hapticsEnabled,
-        reduceAnimations = state.settings.reduceAnimations
+        reduceAnimations = state.settings.reduceAnimations,
+        texturePreset = state.settings.backgroundTexture,
+        textureOpacity = state.settings.backgroundTextureOpacity,
+        fontStyle = state.settings.appFontStyle
     ) {
         val visuals = LocalEzdVisuals.current
         EzdAmbientBackground(modifier = Modifier.fillMaxSize()) {
@@ -228,13 +257,11 @@ private fun EzdRootApp(vm: EzdViewModel) {
                 )
             } else {
                 Box(
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { containerOriginInRoot = it.positionInRoot() }
                 ) {
-                    val screenKey = when {
-                        activeTool != null -> "tool_${activeTool.name}"
-                        state.showSettingsScreen -> "settings"
-                        else -> "main_tabs"
-                    }
+                    val screenKey = if (activeTool != null) "tool_${activeTool.name}" else "main_tabs"
 
                     AnimatedContent(
                         targetState = screenKey,
@@ -244,26 +271,20 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                     .using(SizeTransform(clip = false))
                             } else {
                                 val slideSpec = tween<IntOffset>(
-                                    durationMillis = 350,
-                                    easing = ColorOsMotion.IosNavigationEasing
-                                )
-                                val fadeSpec = tween<Float>(
-                                    durationMillis = 350,
+                                    durationMillis = 320,
                                     easing = ColorOsMotion.IosNavigationEasing
                                 )
                                 val pushing = targetState != "main_tabs"
                                 if (pushing) {
                                     ContentTransform(
                                         targetContentEnter = slideInHorizontally(slideSpec) { fullW -> fullW },
-                                        initialContentExit = slideOutHorizontally(slideSpec) { fullW -> -(fullW * 0.25f).toInt() } +
-                                            fadeOut(fadeSpec, targetAlpha = 0.65f),
+                                        initialContentExit = slideOutHorizontally(slideSpec) { fullW -> -(fullW * 0.25f).toInt() },
                                         targetContentZIndex = 1f,
                                         sizeTransform = SizeTransform(clip = false)
                                     )
                                 } else {
                                     ContentTransform(
-                                        targetContentEnter = slideInHorizontally(slideSpec) { fullW -> -(fullW * 0.25f).toInt() } +
-                                            fadeIn(fadeSpec, initialAlpha = 0.65f),
+                                        targetContentEnter = slideInHorizontally(slideSpec) { fullW -> -(fullW * 0.25f).toInt() },
                                         initialContentExit = slideOutHorizontally(slideSpec) { fullW -> fullW },
                                         targetContentZIndex = -1f,
                                         sizeTransform = SizeTransform(clip = false)
@@ -283,34 +304,6 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                     onBack = { vm.openTool(null) }
                                 )
                             }
-                            key == "settings" -> {
-                                SettingsScreen(
-                                    state = state,
-                                    daemonStats = daemonStats,
-                                    onBack = { vm.setShowSettingsScreen(false) },
-                                    onSetThemeMode = { vm.setThemeMode(it) },
-                                    onSetThemeStyle = { vm.setThemeStyle(it) },
-                                    onSetAccentPreset = { vm.setAccentPreset(it) },
-                                    onSetBlurIntensity = { vm.setBlurIntensity(it) },
-                                    onSetHapticsEnabled = { vm.setHapticsEnabled(it) },
-                                    onSetReduceAnimations = { vm.setReduceAnimations(it) },
-                                    onSetFloatingPillOpaque = { vm.setFloatingPillOpaque(it) },
-                                    onSetDockPosition = { vm.setDockPosition(it) },
-                                    onSetNotificationPrefs = { vm.setNotificationPrefs(it) },
-                                    onToggleDaemon = { vm.toggleDaemonService(it) },
-                                    onOpenTool = { vm.openTool(it) },
-                                    onOpenUsageAccess = { vm.openUsageStatsSettings() },
-                                    onOpenWriteSettings = { vm.openWriteSettings() },
-                                    onOpenAppNotifications = { vm.openAppNotificationSettings() },
-                                    onToggleBootMemory = { vm.setApplyOnBoot(it) },
-                                    onCaptureBootMemory = { vm.captureBootMemorySnapshot() },
-                                    onApplyBootMemoryNow = { vm.applyBootMemoryNow() },
-                                    onClearSafeMode = { vm.clearBootSafeMode() },
-                                    onCheckUpdates = { vm.checkForGitHubUpdates() },
-                                    changelogHistory = remember { vm.builtInChangelog() },
-                                    onBrandLogoTap = handleBrandLogoTap
-                                )
-                            }
                             else -> {
                                 Column(
                                     modifier = Modifier.fillMaxSize()
@@ -319,9 +312,9 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                     TopBrandBar(
                                         title = when (currentTab) {
                                             MainTab.HOME -> "EZD Manager"
-                                            MainTab.PERF -> "Performance Hub"
+                                            MainTab.TOOLS -> "Tools & Engine"
                                             MainTab.APPS -> "Per-App Tuning"
-                                            MainTab.TOOLS -> "System Tools"
+                                            MainTab.SETTINGS -> "Settings"
                                         },
                                         collapseFraction = collapseFraction,
                                         unreadNotifications = state.settings.notifications.unreadCount,
@@ -329,13 +322,21 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                         onSearchClick = { vm.setShowSearchSheet(true) },
                                         onPowerClick = { vm.setShowPowerSheet(true) },
                                         onNotificationsClick = { vm.setShowNotificationsSheet(true) },
-                                        onSettingsClick = { vm.setShowSettingsScreen(true) }
+                                        onSettingsClick = {
+                                            val settingsIdx = tabs.indexOf(MainTab.SETTINGS)
+                                            if (settingsIdx >= 0) {
+                                                scope.launch {
+                                                    pagerState.animateScrollToPage(settingsIdx, animationSpec = ColorOsMotion.fluidSpring())
+                                                }
+                                            }
+                                        }
                                     )
 
                                     BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                                         val maxContentWidth = if (maxWidth > 720.dp) 680.dp else maxWidth
                                         HorizontalPager(
                                             state = pagerState,
+                                            userScrollEnabled = draggedTool == null,
                                             flingBehavior = PagerDefaults.flingBehavior(
                                                 state = pagerState,
                                                 snapAnimationSpec = ColorOsMotion.fluidSpring()
@@ -353,45 +354,84 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                                 ) {
                                                     when (tabs[page]) {
                                                         MainTab.HOME -> {
-                                                            val homeScroll = rememberScrollState()
-                                                            Column(
-                                                                modifier = Modifier
-                                                                    .fillMaxSize()
-                                                                    .verticalScroll(homeScroll)
+                                                            PullToRefreshBox(
+                                                                isRefreshing = state.isRefreshingProbe,
+                                                                onRefresh = { vm.refreshAllHardware(forceProbe = true) },
+                                                                modifier = Modifier.fillMaxSize()
                                                             ) {
-                                                                HomeScreen(
-                                                                    state = state,
-                                                                    daemonStats = daemonStats,
-                                                                    onRetryRoot = { vm.autoDetectRoot(forceFresh = true) },
-                                                                    onRequestShizuku = { vm.requestShizukuPermission() },
-                                                                    onShowDetails = { vm.setShowDeviceDetails(true) },
-                                                                    onApplyProfile = { vm.applyProfile(it) },
-                                                                    onOpenTool = { t -> vm.openTool(t) },
-                                                                    onClearSafeMode = { vm.clearBootSafeMode() },
-                                                                    onUpdateUserProfile = { name, tag, uri -> vm.updateUserProfile(name, tag, uri) }
-                                                                )
+                                                                Column(
+                                                                    modifier = Modifier
+                                                                        .fillMaxSize()
+                                                                        .verticalScroll(homeScroll)
+                                                                ) {
+                                                                    HomeScreen(
+                                                                        state = state,
+                                                                        daemonStats = daemonStats,
+                                                                        onRetryRoot = { vm.autoDetectRoot(forceFresh = true) },
+                                                                        onRequestShizuku = { vm.requestShizukuPermission() },
+                                                                        onShowDetails = { vm.setShowDeviceDetails(true) },
+                                                                        onApplyProfile = { vm.applyProfile(it) },
+                                                                        onToggleBeastMode = { vm.toggleBeastMode() },
+                                                                        onSetBeastThermalLimits = { bat, soc -> vm.setBeastThermalLimits(bat, soc) },
+                                                                        onSetBeastIgnoreThermal = { vm.setBeastIgnoreThermalLimits(it) },
+                                                                        onOpenTool = { t -> vm.openTool(t) },
+                                                                        onClearSafeMode = { vm.clearBootSafeMode() },
+                                                                        onUpdateUserProfile = { name, tag, uri -> vm.updateUserProfile(name, tag, uri) }
+                                                                    )
+                                                                }
                                                             }
                                                         }
-                                                        MainTab.PERF -> {
-                                                            val perfScroll = rememberScrollState()
-                                                            Column(
-                                                                modifier = Modifier
-                                                                    .fillMaxSize()
-                                                                    .verticalScroll(perfScroll)
+                                                        MainTab.TOOLS -> {
+                                                            PullToRefreshBox(
+                                                                isRefreshing = state.isRefreshingProbe,
+                                                                onRefresh = { vm.refreshAllHardware(forceProbe = true) },
+                                                                modifier = Modifier.fillMaxSize()
                                                             ) {
-                                                                PerformanceScreen(
-                                                                    state = state,
-                                                                    onApplyProfile = { vm.applyProfile(it) },
-                                                                    onSetCpuRange = { p, minK, maxK -> vm.setCpuFrequencyRange(p, minK, maxK) },
-                                                                    onSetCpuGovernor = { p, gov -> vm.setCpuGovernor(p, gov) },
-                                                                    onResetCpuPolicy = { p -> vm.resetCpuPolicy(p) },
-                                                                    onToggleCore = { c, on -> vm.toggleCpuCore(c, on) },
-                                                                    onSetGpuRange = { minM, maxM -> vm.setGpuFrequency(minM, maxM) },
-                                                                    onSetGpuGovernor = { g -> vm.setGpuGovernor(g) },
-                                                                    onResetGpu = { vm.resetGpu() },
-                                                                    onOpenTool = { t -> vm.openTool(t) },
-                                                                    onRequestRoot = { vm.autoDetectRoot(forceFresh = true) }
-                                                                )
+                                                                Column(
+                                                                    modifier = Modifier
+                                                                        .fillMaxSize()
+                                                                        .verticalScroll(toolsScroll)
+                                                                ) {
+                                                                    ToolsScreen(
+                                                                        state = state,
+                                                                        currentAuthority = state.effectivePrivilegeMode,
+                                                                        pinnedTools = state.settings.pinnedPillTools,
+                                                                        onSelectTool = { t -> vm.openTool(t) },
+                                                                        onRequestRoot = { vm.autoDetectRoot(forceFresh = true) },
+                                                                        onRequestShizuku = { vm.requestShizukuPermission() },
+                                                                        onApplyProfile = { vm.applyProfile(it) },
+                                                                        onSetCpuRange = { p, minK, maxK -> vm.setCpuFrequencyRange(p, minK, maxK) },
+                                                                        onSetCpuGovernor = { p, gov -> vm.setCpuGovernor(p, gov) },
+                                                                        onResetCpuPolicy = { p -> vm.resetCpuPolicy(p) },
+                                                                        onToggleCore = { c, on -> vm.toggleCpuCore(c, on) },
+                                                                        onSetGpuRange = { minM, maxM -> vm.setGpuFrequency(minM, maxM) },
+                                                                        onSetGpuGovernor = { g -> vm.setGpuGovernor(g) },
+                                                                        onResetGpu = { vm.resetGpu() },
+                                                                        onToolDragStart = { tool, rootPos ->
+                                                                            draggedTool = tool
+                                                                            dragPointerRoot = rootPos
+                                                                        },
+                                                                        onToolDragMove = { rootPos ->
+                                                                            dragPointerRoot = rootPos
+                                                                        },
+                                                                        onToolDragEnd = {
+                                                                            val tool = draggedTool
+                                                                            val bounds = pillBoundsInRoot
+                                                                            if (tool != null && bounds != null && bounds.contains(dragPointerRoot)) {
+                                                                                vm.pinToolToPill(tool)
+                                                                                Toast.makeText(
+                                                                                    context,
+                                                                                    "Pinned ${tool.title} to navigation pill",
+                                                                                    Toast.LENGTH_SHORT
+                                                                                ).show()
+                                                                            }
+                                                                            draggedTool = null
+                                                                        },
+                                                                        onToolDragCancel = {
+                                                                            draggedTool = null
+                                                                        }
+                                                                    )
+                                                                }
                                                             }
                                                         }
                                                         MainTab.APPS -> {
@@ -413,18 +453,39 @@ private fun EzdRootApp(vm: EzdViewModel) {
                                                                 spoofPresets = vm.allSpoofPresets()
                                                             )
                                                         }
-                                                        MainTab.TOOLS -> {
-                                                            val toolsScroll = rememberScrollState()
+                                                        MainTab.SETTINGS -> {
                                                             Column(
                                                                 modifier = Modifier
                                                                     .fillMaxSize()
-                                                                    .verticalScroll(toolsScroll)
+                                                                    .verticalScroll(settingsScroll)
                                                             ) {
-                                                                ToolsScreen(
-                                                                    currentAuthority = state.effectivePrivilegeMode,
-                                                                    onSelectTool = { t -> vm.openTool(t) },
-                                                                    onRequestRoot = { vm.autoDetectRoot(forceFresh = true) },
-                                                                    onRequestShizuku = { vm.requestShizukuPermission() }
+                                                                SettingsScreen(
+                                                                    state = state,
+                                                                    daemonStats = daemonStats,
+                                                                    onSetThemeMode = { vm.setThemeMode(it) },
+                                                                    onSetAccentPreset = { vm.setAccentPreset(it) },
+                                                                    onSetBlurIntensity = { vm.setBlurIntensity(it) },
+                                                                    onSetReduceAnimations = { vm.setReduceAnimations(it) },
+                                                                    onSetFloatingPillOpaque = { vm.setFloatingPillOpaque(it) },
+                                                                    onSetBackgroundTexture = { vm.setBackgroundTexture(it) },
+                                                                    onSetBackgroundTextureOpacity = { vm.setBackgroundTextureOpacity(it) },
+                                                                    onSetAppFontStyle = { vm.setAppFontStyle(it) },
+                                                                    onRemovePinnedTool = { vm.unpinToolFromPill(it) },
+                                                                    onMovePinnedTool = { tool, delta -> vm.movePinnedPillTool(tool, delta) },
+                                                                    onSetNotificationPrefs = { vm.setNotificationPrefs(it) },
+                                                                    onToggleDaemon = { vm.toggleDaemonService(it) },
+                                                                    onOpenTool = { vm.openTool(it) },
+                                                                    onOpenUsageAccess = { vm.openUsageStatsSettings() },
+                                                                    onOpenWriteSettings = { vm.openWriteSettings() },
+                                                                    onOpenAppNotifications = { vm.openAppNotificationSettings() },
+                                                                    onToggleBootMemory = { vm.setApplyOnBoot(it) },
+                                                                    onCaptureBootMemory = { vm.captureBootMemorySnapshot() },
+                                                                    onApplyBootMemoryNow = { vm.applyBootMemoryNow() },
+                                                                    onClearSafeMode = { vm.clearBootSafeMode() },
+                                                                    onCheckUpdates = { vm.checkForGitHubUpdates() },
+                                                                    onCopyDiagnostics = { vm.exportAndCopyDiagnostics() },
+                                                                    changelogHistory = remember { vm.builtInChangelog() },
+                                                                    onBrandLogoTap = handleBrandLogoTap
                                                                 )
                                                             }
                                                         }
@@ -438,30 +499,75 @@ private fun EzdRootApp(vm: EzdViewModel) {
                         }
                     }
 
-                    // Floating Frosted Liquid-Glass Floating Pill Nav Bar (direct child of root Box, zIndex(50f))
-                    if (activeTool == null && !state.showSettingsScreen) {
+                    // Floating Frosted Liquid-Glass Navigation Pill driven strictly by PagerState
+                    if (activeTool == null) {
+                        val dropHovered = draggedTool != null && pillBoundsInRoot?.contains(dragPointerRoot) == true
                         FloatingPillNavBar(
-                            selectedTab = tabs[pagerState.currentPage],
-                            pagerPosition = pagerState.currentPage + pagerState.currentPageOffsetFraction,
+                            pagerState = pagerState,
                             backdropLayer = null,
                             opaque = state.settings.floatingPillOpaque,
-                            onSelectTab = { target ->
-                                val idx = tabs.indexOf(target)
-                                if (idx >= 0) {
-                                    scope.launch {
-                                        pagerState.animateScrollToPage(idx, animationSpec = ColorOsMotion.fluidSpring())
-                                    }
+                            pinnedTools = state.settings.pinnedPillTools,
+                            isDropTargetHovered = dropHovered,
+                            onPillBoundsChanged = { bounds -> pillBoundsInRoot = bounds },
+                            onOpenPinnedTool = { tool ->
+                                val badge = WorkModeManager.getToolBadge(tool, state.effectivePrivilegeMode)
+                                if (badge.isStrictlyLocked) {
+                                    Toast.makeText(
+                                        context,
+                                        "${tool.title} requires Root access",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    vm.openTool(tool)
                                 }
                             },
-                            onDragPagerOffset = { frac ->
-                                scope.launch {
-                                    pagerState.scrollToPage(frac.roundToInt(), (frac - frac.roundToInt()).coerceIn(-0.5f, 0.5f))
-                                }
-                            },
+                            onRemovePinnedTool = { vm.unpinToolFromPill(it) },
+                            onMovePinnedTool = { tool, delta -> vm.movePinnedPillTool(tool, delta) },
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .zIndex(50f)
                         )
+                    }
+
+                    // Drag-and-drop preview badge floating under the user's finger
+                    draggedTool?.let { tool ->
+                        val localPos = dragPointerRoot - containerOriginInRoot
+                        val dropReady = pillBoundsInRoot?.contains(dragPointerRoot) == true
+                        Surface(
+                            modifier = Modifier
+                                .offset {
+                                    IntOffset(
+                                        x = (localPos.x - 110f).roundToInt(),
+                                        y = (localPos.y - 90f).roundToInt()
+                                    )
+                                }
+                                .zIndex(80f),
+                            shape = CircleShape,
+                            color = visuals.solidSurfaceElevated,
+                            shadowElevation = 10.dp,
+                            border = BorderStroke(
+                                width = if (dropReady) 2.dp else 1.dp,
+                                color = if (dropReady) visuals.accent else visuals.glassBorder
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = pinnedToolIcon(tool),
+                                    contentDescription = null,
+                                    tint = if (dropReady) visuals.accent else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = if (dropReady) "Drop to Pin: ${tool.title}" else tool.title,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (dropReady) visuals.accent else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
                     }
 
                     if (!splashDone) {
@@ -502,7 +608,12 @@ private fun EzdRootApp(vm: EzdViewModel) {
                     daemonStats = daemonStats,
                     onOpenSettings = {
                         vm.setShowNotificationsSheet(false)
-                        vm.setShowSettingsScreen(true)
+                        val settingsIdx = tabs.indexOf(MainTab.SETTINGS)
+                        if (settingsIdx >= 0) {
+                            scope.launch {
+                                pagerState.animateScrollToPage(settingsIdx, animationSpec = ColorOsMotion.fluidSpring())
+                            }
+                        }
                     },
                     onDismiss = { vm.setShowNotificationsSheet(false) }
                 )
@@ -529,12 +640,24 @@ private fun ToolDetailContainer(
     onBack: () -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+    val isTerminal = tool == ToolId.ROOT_TERMINAL
+    val baseModifier = Modifier
+        .fillMaxSize()
+        .background(visuals.bgBase)
+        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+    val containerModifier = if (isTerminal) {
+        baseModifier
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    } else {
+        baseModifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    }
+
+    Column(
+        modifier = containerModifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(
@@ -561,7 +684,7 @@ private fun ToolDetailContainer(
             }
         }
 
-        if (state.statusBanner.isNotBlank()) {
+        if (state.statusBanner.isNotBlank() && !isTerminal) {
             GlassCard(cornerRadius = 20.dp, highlightBorder = true) {
                 Text(state.statusBanner, style = MaterialTheme.typography.bodySmall)
             }
@@ -589,13 +712,16 @@ private fun ToolDetailContainer(
             ToolId.NETWORK -> NetworkPanel(state, vm)
             ToolId.AUDIO_ENHANCER -> AudioEnhancerPanel(state, vm)
             ToolId.BATTERY_SAVING -> BatterySavingPanel(state, vm)
+            ToolId.FAST_CHARGE -> FastChargePanel(state, vm)
             ToolId.DEVICE_SPOOF -> DeviceSpoofPanel(state, vm)
             ToolId.PROFILES -> ProfilesPanel(state, vm)
             ToolId.EZD_BACKUP -> EzdBackupPanel(state, vm)
             ToolId.APP_BACKUP -> AppBackupPanel(state, vm)
-            ToolId.ROOT_TERMINAL -> RootTerminalPanel(state, vm)
+            ToolId.ROOT_TERMINAL -> RootTerminalPanel(state, vm, modifier = Modifier.weight(1f))
         }
-        Spacer(Modifier.height(48.dp).navigationBarsPadding())
+        if (!isTerminal) {
+            Spacer(Modifier.height(48.dp).navigationBarsPadding())
+        }
     }
 }
 
@@ -629,7 +755,7 @@ private fun PowerControlBottomSheet(
                         pendingConfirm = action
                     },
                 shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                color = visuals.solidSurfaceBase,
                 border = BorderStroke(1.dp, visuals.glassBorder)
             ) {
                 Row(
@@ -765,7 +891,7 @@ private fun GlobalSearchDialog(
                                 .clip(RoundedCornerShape(18.dp))
                                 .clickable { onSelectEntry(item) },
                             shape = RoundedCornerShape(18.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            color = visuals.solidSurfaceElevated,
                             border = BorderStroke(1.dp, visuals.glassBorder)
                         ) {
                             Row(

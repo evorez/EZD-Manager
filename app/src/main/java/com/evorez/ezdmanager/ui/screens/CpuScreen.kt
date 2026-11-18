@@ -1,6 +1,7 @@
 package com.evorez.ezdmanager.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -18,6 +19,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.evorez.ezdmanager.model.*
+import com.evorez.ezdmanager.root.HwResult
+import com.evorez.ezdmanager.root.shortTag
 import com.evorez.ezdmanager.ui.components.*
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
@@ -52,8 +55,16 @@ fun CpuScreen(
                     Column {
                         Text("CPU Clusters & Clocks", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = state.overview.cpuUsagePercent?.let { "Live CPU Load: $it% · ${state.cpuPolicies.size} cluster(s)" }
-                                ?: "${state.cpuPolicies.size} cluster(s) detected",
+                            text = when {
+                                state.overview.cpuUsagePercent != null && state.cpuPolicies.isNotEmpty() ->
+                                    "Live CPU Load: ${state.overview.cpuUsagePercent}% · ${state.cpuPolicies.size} cluster(s)"
+                                state.cpuPolicies.isNotEmpty() ->
+                                    "${state.cpuPolicies.size} cluster(s) detected · ${state.cpuResult.shortTag()}"
+                                state.overview.cpuUsagePercent != null ->
+                                    "Live CPU Load: ${state.overview.cpuUsagePercent}% · Probe: ${state.cpuResult.shortTag()}"
+                                else ->
+                                    "Probe: ${state.cpuResult.shortTag()}"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = JetBrainsMono,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -66,30 +77,55 @@ fun CpuScreen(
             }
         }
 
-        if (state.rootStatus != RootStatus.GRANTED) {
+        val rootGranted = state.rootStatus == RootStatus.GRANTED
+        if (!rootGranted || state.cpuPolicies.isEmpty() || state.cpuResult !is HwResult.Applied) {
             GlassCard(cornerRadius = 24.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (state.cpuPolicies.isEmpty()) "CPU Policy Probe" else "CPU Write Access",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    StatusPill(
+                        label = state.cpuResult.shortTag(),
+                        accent = if (state.cpuResult is HwResult.Applied) visuals.successColor else visuals.warningColor
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "CPU scaling and governor controls require root access.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = state.cpuReason,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                state.probeReport?.let { rep ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Kernel: ${rep.kernelVersion} · SELinux: ${rep.selinuxMode} · Root: ${rep.rootType}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = visuals.accent
+                    )
+                }
+                if (state.cpuPathsTried.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Paths tried: ${state.cpuPathsTried.joinToString(", ")}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            return
         }
 
-        if (state.cpuPolicies.isEmpty()) {
-            GlassCard(cornerRadius = 24.dp) {
-                Text(
-                    text = "No readable cpufreq policy nodes found on this kernel.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
+        if (state.cpuPolicies.isNotEmpty()) {
             state.cpuPolicies.forEach { policy ->
                 CpuPolicyCard(
                     policy = policy,
-                    busy = state.busy,
+                    busy = state.busy || !rootGranted,
                     isLite = visuals.isLiteMode,
                     onSetRange = { minK, maxK -> onSetCpuRange(policy, minK, maxK) },
                     onSetGovernor = { gov -> onSetCpuGovernor(policy, gov) },
@@ -275,11 +311,14 @@ private fun CoreTile(
             .clip(RoundedCornerShape(16.dp))
             .then(if (core.hotplugSupported && !busy) Modifier.clickable(onClick = onToggle) else Modifier),
         shape = RoundedCornerShape(16.dp),
-        color = activeColor.copy(alpha = if (core.online) 0.14f else 0.08f),
+        color = visuals.solidSurfaceElevated,
         border = BorderStroke(1.dp, activeColor.copy(alpha = 0.45f))
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(activeColor.copy(alpha = if (core.online) 0.14f else 0.08f))
+                .padding(horizontal = 6.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("CPU${core.index}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)

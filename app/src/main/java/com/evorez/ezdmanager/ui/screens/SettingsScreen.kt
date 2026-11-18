@@ -3,7 +3,6 @@ package com.evorez.ezdmanager.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -16,12 +15,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,29 +33,30 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.evorez.ezdmanager.BuildConfig
 import com.evorez.ezdmanager.R
-import kotlin.math.roundToInt
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.ui.components.*
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
-import com.evorez.ezdmanager.ui.theme.buildVisualTokens
 import com.evorez.ezdmanager.viewmodel.EzdUiState
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SettingsScreen(
     state: EzdUiState,
     daemonStats: DaemonStats,
-    onBack: () -> Unit,
     onSetThemeMode: (ThemeMode) -> Unit,
-    onSetThemeStyle: (EzdThemeStyle) -> Unit,
     onSetAccentPreset: (AccentColorPreset) -> Unit,
     onSetBlurIntensity: (Float) -> Unit,
-    onSetHapticsEnabled: (Boolean) -> Unit,
     onSetReduceAnimations: (Boolean) -> Unit,
     onSetFloatingPillOpaque: (Boolean) -> Unit,
-    onSetDockPosition: (DockPosition) -> Unit,
+    onSetBackgroundTexture: (BackgroundTexturePreset) -> Unit,
+    onSetBackgroundTextureOpacity: (Float) -> Unit,
+    onSetAppFontStyle: (AppFontStyle) -> Unit,
+    onRemovePinnedTool: (ToolId) -> Unit,
+    onMovePinnedTool: (ToolId, Int) -> Unit,
     onSetNotificationPrefs: (NotificationPrefs) -> Unit,
     onToggleDaemon: (Boolean) -> Unit,
     onOpenTool: (ToolId) -> Unit,
@@ -67,14 +68,18 @@ fun SettingsScreen(
     onApplyBootMemoryNow: () -> Unit,
     onClearSafeMode: () -> Unit,
     onCheckUpdates: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
     changelogHistory: List<Pair<String, List<String>>>,
     onBrandLogoTap: () -> Unit
 ) {
     val context = LocalContext.current
     val visuals = LocalEzdVisuals.current
     val notifs = state.settings.notifications
-    var permissionsExpanded by remember { mutableStateOf(false) }
-    var changelogExpanded by remember { mutableStateOf(false) }
+
+    // Appearance card collapsed by default per Phase 3 spec
+    var appearanceExpanded by rememberSaveable { mutableStateOf(false) }
+    var permissionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var changelogExpanded by rememberSaveable { mutableStateOf(false) }
     var showDaemonLogs by remember { mutableStateOf(false) }
 
     val grantedCount = listOf(
@@ -86,43 +91,39 @@ fun SettingsScreen(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-            .verticalScroll(rememberScrollState())
+            .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Floating Back Pill Header with Dark/Light Mode Toggle on right
+        // Section Header with Dark/Light toggle right next to Settings header
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Surface(
-                shape = CircleShape,
-                color = visuals.pillBackground,
-                border = BorderStroke(1.dp, visuals.glassBorder)
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "Back",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
             Column(modifier = Modifier.weight(1f)) {
-                Text("Settings", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
-                Text("Pill dock, daemon & author", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = "Settings",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "Appearance, textures, fonts, daemon & updates",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             Surface(
                 shape = CircleShape,
-                color = visuals.pillBackground,
+                color = visuals.solidSurfaceElevated,
                 border = BorderStroke(1.dp, visuals.glassBorder),
-                modifier = Modifier.clickable {
-                    val nextMode = if (state.settings.themeMode == ThemeMode.LIGHT) ThemeMode.DARK else ThemeMode.LIGHT
-                    onSetThemeMode(nextMode)
-                }.testTag("header_dark_light_toggle")
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable {
+                        val nextMode = if (state.settings.themeMode == ThemeMode.LIGHT) ThemeMode.DARK else ThemeMode.LIGHT
+                        onSetThemeMode(nextMode)
+                    }
+                    .testTag("header_dark_light_toggle")
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -144,7 +145,7 @@ fun SettingsScreen(
             }
         }
 
-        // Classic Evorez Author Profile Card
+        // Author Profile Card
         GlassCard(cornerRadius = 28.dp, highlightBorder = true) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -176,7 +177,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "EZD Manager · v1.0",
+                        text = "EZD Manager · v${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = JetBrainsMono,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -203,7 +204,7 @@ fun SettingsScreen(
                     label = "Evorez",
                     badgeText = "TG",
                     icon = Icons.Rounded.Send,
-                    onClick = { openUrl(context, "https://t.me/evorezlabs") },
+                    onClick = { openUrl(context, "https://t.me/Evorez") },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("author_telegram_pill")
@@ -211,93 +212,237 @@ fun SettingsScreen(
             }
         }
 
-        // Accent Color, Blur Intensity, Haptics & Reduced Motion
+        // Collapsible Appearance, Textures & Fonts Card (Collapsed by default)
         GlassCard(cornerRadius = 26.dp) {
-            Text("Appearance, Blur & Motion", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(6.dp))
-            Text("Accent Color", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            CollapsibleSection(
+                title = "Appearance, Textures & Fonts",
+                subtitle = "Background textures, font family, accent & glass blur",
+                expanded = appearanceExpanded,
+                onToggle = { appearanceExpanded = !appearanceExpanded },
+                testTag = "appearance_collapse_toggle",
+                trailingBadge = "${state.settings.backgroundTexture.label} · ${state.settings.appFontStyle.label.substringBefore(" ")}"
             ) {
-                AccentColorPreset.entries.forEach { preset ->
-                    val swatchColor = preset.argb?.let { Color(it) } ?: visuals.accent
-                    FilterChip(
-                        selected = state.settings.accentPreset == preset,
-                        onClick = { onSetAccentPreset(preset) },
-                        leadingIcon = {
-                            Box(
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clip(CircleShape)
-                                    .background(swatchColor)
-                                    .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
-                            )
-                        },
-                        label = { Text(preset.label, style = MaterialTheme.typography.labelMedium) },
-                        shape = CircleShape,
-                        modifier = Modifier.testTag("accent_preset_${preset.name}")
+                Spacer(Modifier.height(6.dp))
+
+                // 1. Background Texture Selector + Opacity Slider
+                Text("Background Texture", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BackgroundTexturePreset.entries.forEach { preset ->
+                        FilterChip(
+                            selected = state.settings.backgroundTexture == preset,
+                            onClick = { onSetBackgroundTexture(preset) },
+                            label = { Text(preset.label, style = MaterialTheme.typography.labelMedium) },
+                            shape = CircleShape,
+                            modifier = Modifier.testTag("texture_preset_${preset.name}")
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                val texOpacityPct = (state.settings.backgroundTextureOpacity * 100f).roundToInt()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Texture Opacity", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = if (state.settings.backgroundTexture == BackgroundTexturePreset.PLAIN) "Plain" else "$texOpacityPct%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = JetBrainsMono,
+                        color = visuals.accent
                     )
                 }
-            }
+                var sliderTexOpacity by remember(state.settings.backgroundTextureOpacity) {
+                    mutableFloatStateOf(state.settings.backgroundTextureOpacity)
+                }
+                GlassSlider(
+                    value = sliderTexOpacity,
+                    onValueChange = { sliderTexOpacity = it },
+                    onValueChangeFinished = { onSetBackgroundTextureOpacity(sliderTexOpacity) },
+                    valueRange = 0f..1f,
+                    enabled = state.settings.backgroundTexture != BackgroundTexturePreset.PLAIN
+                )
 
-            Spacer(Modifier.height(10.dp))
-            val blurPercent = (state.settings.blurIntensity * 100f).roundToInt()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Frosted Glass Blur Intensity", style = MaterialTheme.typography.labelLarge)
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+                // 2. App Font Selector
+                Text("Typography Font", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AppFontStyle.entries.forEach { font ->
+                        FilterChip(
+                            selected = state.settings.appFontStyle == font,
+                            onClick = { onSetAppFontStyle(font) },
+                            label = { Text(font.label, style = MaterialTheme.typography.labelMedium) },
+                            shape = CircleShape,
+                            modifier = Modifier.testTag("font_style_${font.name}")
+                        )
+                    }
+                }
+
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+                // 3. Accent Color
+                Text("Accent Color", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AccentColorPreset.entries.forEach { preset ->
+                        val swatchColor = preset.argb?.let { Color(it) } ?: visuals.accent
+                        FilterChip(
+                            selected = state.settings.accentPreset == preset,
+                            onClick = { onSetAccentPreset(preset) },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                        .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape)
+                                )
+                            },
+                            label = { Text(preset.label, style = MaterialTheme.typography.labelMedium) },
+                            shape = CircleShape,
+                            modifier = Modifier.testTag("accent_preset_${preset.name}")
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                val blurPercent = (state.settings.blurIntensity * 100f).roundToInt()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Frosted Glass Blur Intensity", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = if (state.settings.themeMode == ThemeMode.LITE) "Off (Lite)" else "$blurPercent%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = JetBrainsMono,
+                        color = visuals.accent
+                    )
+                }
+                var sliderBlur by remember(state.settings.blurIntensity) { mutableFloatStateOf(state.settings.blurIntensity) }
+                GlassSlider(
+                    value = sliderBlur,
+                    onValueChange = { sliderBlur = it },
+                    onValueChangeFinished = { onSetBlurIntensity(sliderBlur) },
+                    valueRange = 0f..1f,
+                    enabled = state.settings.themeMode != ThemeMode.LITE
+                )
+
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                SettingToggleRow("Reduce Animations", state.settings.reduceAnimations, onSetReduceAnimations)
+                SettingToggleRow("Bottom Floating Pill Opaque", state.settings.floatingPillOpaque, onSetFloatingPillOpaque)
                 Text(
-                    text = if (state.settings.themeMode == ThemeMode.LITE) "Off (Lite)" else "$blurPercent%",
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "Automatically obeys Android system prefers-reduced-motion scale.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (state.settings.pinnedPillTools.isNotEmpty()) {
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text("Pinned Pill Shortcuts (Drag from Tools)", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(6.dp))
+                    state.settings.pinnedPillTools.forEachIndexed { idx, tool ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(tool.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Row {
+                                IconButton(
+                                    onClick = { onMovePinnedTool(tool, -1) },
+                                    enabled = idx > 0,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = "Move Left")
+                                }
+                                IconButton(
+                                    onClick = { onMovePinnedTool(tool, +1) },
+                                    enabled = idx < state.settings.pinnedPillTools.lastIndex,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = "Move Right")
+                                }
+                                IconButton(
+                                    onClick = { onRemovePinnedTool(tool) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "Unpin ${tool.title}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hardware Diagnostics Export
+        GlassCard(cornerRadius = 26.dp) {
+            Text("Hardware Diagnostics", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Exports full CPU, GPU, ZRAM, I/O, kernel, SELinux & display probe results to clipboard and Download/ezd-diag.txt.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            state.probeReport?.let { rep ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Kernel: ${rep.kernelVersion} · SELinux: ${rep.selinuxMode} · Root: ${rep.rootType}",
+                    style = MaterialTheme.typography.labelSmall,
                     fontFamily = JetBrainsMono,
                     color = visuals.accent
                 )
             }
-            var sliderBlur by remember(state.settings.blurIntensity) { mutableStateOf(state.settings.blurIntensity) }
-            GlassSlider(
-                value = sliderBlur,
-                onValueChange = { sliderBlur = it },
-                onValueChangeFinished = { onSetBlurIntensity(sliderBlur) },
-                valueRange = 0f..1f,
-                enabled = state.settings.themeMode != ThemeMode.LITE
-            )
-
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-            SettingToggleRow("Haptic Feedback", state.settings.hapticsEnabled, onSetHapticsEnabled)
-            SettingToggleRow("Reduce Animations", state.settings.reduceAnimations, onSetReduceAnimations)
-            SettingToggleRow("Bottom Floating Pill Opaque", state.settings.floatingPillOpaque, onSetFloatingPillOpaque)
-            Text(
-                text = "Automatically obeys Android system prefers-reduced-motion scale.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        // Bottom Floating Pill Nav Dock Position
-        GlassCard(cornerRadius = 26.dp) {
-            Text("Navigation Pill Location", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "Choose where the liquid-glass pill docks inside the app.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DockPosition.entries.forEach { pos ->
-                    FilterChip(
-                        selected = state.settings.dockPosition == pos,
-                        onClick = { onSetDockPosition(pos) },
-                        label = { Text(pos.label) },
-                        shape = CircleShape
-                    )
-                }
+            if (state.diagnosticsExportPath.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Saved: ${state.diagnosticsExportPath}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = visuals.successColor
+                )
+            } else if (state.diagnosticsExportError.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Export error: ${state.diagnosticsExportError}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = JetBrainsMono,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
+            Spacer(Modifier.height(10.dp))
+            GlassButton(
+                text = "Copy diagnostics",
+                icon = Icons.Rounded.ContentCopy,
+                onClick = onCopyDiagnostics,
+                enabled = !state.busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("copy_diagnostics_btn")
+            )
         }
 
         // Boot Memory (Auto-Apply Tuning on Device Startup) & Boot-Loop Safe Mode
@@ -313,7 +458,7 @@ fun SettingsScreen(
                     Text("Boot Memory on Start", style = MaterialTheme.typography.titleMedium)
                     Text(
                         text = if (safeActive) {
-                            "Paused: Boot-Loop Safe Mode triggered after 2 failed boots."
+                            "Paused: Boot-Loop Safe Mode triggered after 3 failed boots."
                         } else {
                             "Restores saved profile, refresh rate, overlays & DNS after reboot."
                         },
@@ -380,7 +525,7 @@ fun SettingsScreen(
             }
         }
 
-        // Notifications Only (Audio Enhancer removed from Settings)
+        // Notifications
         GlassCard(cornerRadius = 26.dp) {
             Text("Notifications", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
@@ -439,7 +584,25 @@ fun SettingsScreen(
             }
         }
 
-        // Updates & Changelog (GitHub Releases)
+        // Collapsible Permissions Status (Collapsed by Default)
+        GlassCard(cornerRadius = 26.dp) {
+            CollapsibleSection(
+                title = "Permissions Status",
+                subtitle = "Root, Usage Access, System Settings & Alerts",
+                expanded = permissionsExpanded,
+                onToggle = { permissionsExpanded = !permissionsExpanded },
+                testTag = "permissions_status_collapse_toggle",
+                trailingBadge = "$grantedCount/4"
+            ) {
+                Spacer(Modifier.height(4.dp))
+                PermissionStatusRow("Root Access (su)", state.rootStatus == RootStatus.GRANTED, null)
+                PermissionStatusRow("Usage Access (Per-App)", state.usageAccessGranted, onOpenUsageAccess)
+                PermissionStatusRow("Modify System Settings", state.writeSettingsGranted, onOpenWriteSettings)
+                PermissionStatusRow("Notifications", state.notificationsGranted, onOpenAppNotifications)
+            }
+        }
+
+        // Check for Updates (at very bottom of Settings)
         GlassCard(cornerRadius = 26.dp, highlightBorder = state.releaseInfo.updateAvailable) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -447,10 +610,17 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Changelog & GitHub Updates", style = MaterialTheme.typography.titleMedium)
+                    Text("Check for Updates", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Installed: v${BuildConfig.VERSION_NAME} · Repo: evorez/EZD-Manager",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = visuals.accent
+                    )
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         text = state.releaseInfo.statusMessage.ifBlank {
-                            "Check evorez/EZD-Manager GitHub releases (no account required)"
+                            "Queries GitHub Releases for evorez/EZD-Manager (works offline with clear status)."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.releaseInfo.updateAvailable) visuals.successColor else MaterialTheme.colorScheme.onSurfaceVariant
@@ -480,7 +650,7 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 GlassButton(
-                    text = if (state.checkingUpdate) "Checking…" else "Check Updates",
+                    text = if (state.checkingUpdate) "Checking…" else "Check for Updates",
                     icon = Icons.Rounded.SystemUpdate,
                     onClick = onCheckUpdates,
                     enabled = !state.checkingUpdate,
@@ -519,25 +689,7 @@ fun SettingsScreen(
             }
         }
 
-        // Collapsible Permissions Status (Collapsed by Default)
-        GlassCard(cornerRadius = 26.dp) {
-            CollapsibleSection(
-                title = "Permissions Status",
-                subtitle = "Root, Usage Access, System Settings & Alerts",
-                expanded = permissionsExpanded,
-                onToggle = { permissionsExpanded = !permissionsExpanded },
-                testTag = "permissions_status_collapse_toggle",
-                trailingBadge = "$grantedCount/4"
-            ) {
-                Spacer(Modifier.height(4.dp))
-                PermissionStatusRow("Root Access (su)", state.rootStatus == RootStatus.GRANTED, null)
-                PermissionStatusRow("Usage Access (Per-App)", state.usageAccessGranted, onOpenUsageAccess)
-                PermissionStatusRow("Modify System Settings", state.writeSettingsGranted, onOpenWriteSettings)
-                PermissionStatusRow("Notifications", state.notificationsGranted, onOpenAppNotifications)
-            }
-        }
-
-        Spacer(Modifier.height(124.dp).navigationBarsPadding())
+        Spacer(Modifier.height(if (state.settings.pinnedPillTools.isEmpty()) 128.dp else 164.dp))
     }
 }
 
