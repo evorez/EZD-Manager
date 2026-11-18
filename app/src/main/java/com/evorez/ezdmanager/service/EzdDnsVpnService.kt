@@ -314,7 +314,8 @@ class EzdDnsVpnService : VpnService() {
         pkt[0] = 0x45.toByte()
         pkt[1] = 0x00
         bb.putShort(2, totalLen.toShort())
-        bb.putShort(4, reqIpHeader[4])
+        pkt[4] = reqIpHeader[4]
+        pkt[5] = reqIpHeader[5]
         bb.putShort(6, 0x4000.toShort()) // DF
         pkt[8] = 64.toByte() // TTL
         pkt[9] = 17.toByte() // UDP
@@ -383,26 +384,45 @@ class EzdDnsVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                nm.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID, "EZD Per-App DNS", NotificationManager.IMPORTANCE_LOW)
-                )
+                val ch = NotificationChannel(
+                    CHANNEL_ID,
+                    "EZD Per-App DNS",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    setShowBadge(false)
+                    setSound(null, null)
+                    enableVibration(false)
+                }
+                nm.createNotificationChannel(ch)
             }
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun buildNotification(text: String): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
-            @Suppress("DEPRECATION")
             Notification.Builder(this)
+                .setPriority(Notification.PRIORITY_LOW)
+                .setSound(null)
         }
-        return builder
+        builder
             .setContentTitle("EZD Per-App DNS Active")
             .setContentText(text)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_ezd_stat)
             .setOngoing(true)
-            .build()
+            .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+
+        EzdNotificationHelper.getAppLogoBitmap(this)?.let { logo ->
+            builder.setLargeIcon(logo)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+        return builder.build()
     }
 
     companion object {

@@ -19,61 +19,100 @@ import org.json.JSONObject
 private val Context.ezdDataStore: DataStore<Preferences> by preferencesDataStore(name = "ezd_settings")
 
 data class UserSettings(
+    val onboardingCompleted: Boolean = false,
+    val userName: String = "Evorez User",
+    val userTagline: String = "Device Tuner",
+    val userPhotoPath: String = "",
     val themeMode: ThemeMode = ThemeMode.DARK,
-    val floatingPill: FloatingPillConfig = FloatingPillConfig(),
+    val themeStyle: EzdThemeStyle = EzdThemeStyle.AMOLED_OBSIDIAN,
+    val animStyle: AppAnimStyle = AppAnimStyle.IOS_CARD_MORPH,
+    val workMode: WorkMode = WorkMode.AUTO,
+    val dockPosition: DockPosition = DockPosition.BOTTOM,
     val notifications: NotificationPrefs = NotificationPrefs(),
     val activeProfileId: String = "balanced",
     val daemonEnabled: Boolean = true,
     val savedAudioPreset: String = "Dynamic",
-    val gameSpace: GameSpaceConfig = GameSpaceConfig(),
-    val edlSupportedVerified: Boolean = false
+    val audioBassEnabled: Boolean = true,
+    val audioEqEnabled: Boolean = true,
+    val audioVisualStyle: AudioVisualStyle = AudioVisualStyle.BASS_PULSE,
+    val audioBassFocus: String = "Punch 60Hz",
+    val bootMemory: BootMemoryConfig = BootMemoryConfig(),
+    val accentPreset: AccentColorPreset = AccentColorPreset.THEME_DEFAULT,
+    val blurIntensity: Float = 0.78f,
+    val hapticsEnabled: Boolean = true,
+    val reduceAnimations: Boolean = false,
+    val floatingPillOpaque: Boolean = false
 )
 
 class SettingsDataStore(private val context: Context) {
 
     private object Keys {
+        val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
+        val USER_NAME = stringPreferencesKey("user_name")
+        val USER_TAGLINE = stringPreferencesKey("user_tagline")
+        val USER_PHOTO_PATH = stringPreferencesKey("user_photo_path")
         val THEME_MODE = stringPreferencesKey("theme_mode")
-        val PILL_ENABLED = booleanPreferencesKey("floating_pill_enabled")
-        val PILL_POSITION = stringPreferencesKey("floating_pill_position")
-        val PILL_OPACITY = floatPreferencesKey("floating_pill_opacity")
-        val PILL_SHORTCUTS = stringPreferencesKey("floating_pill_shortcuts")
+        val THEME_STYLE = stringPreferencesKey("theme_style")
+        val ANIM_STYLE = stringPreferencesKey("anim_style")
+        val WORK_MODE = stringPreferencesKey("work_mode")
+        val DOCK_POSITION = stringPreferencesKey("dock_position")
         val NOTIF_DAEMON = booleanPreferencesKey("notif_daemon")
-        val NOTIF_GAME = booleanPreferencesKey("notif_game")
         val NOTIF_BATTERY = booleanPreferencesKey("notif_battery")
         val NOTIF_UNREAD = intPreferencesKey("notif_unread")
         val ACTIVE_PROFILE = stringPreferencesKey("active_profile")
         val DAEMON_ENABLED = booleanPreferencesKey("daemon_enabled")
         val AUDIO_PRESET = stringPreferencesKey("audio_preset")
+        val AUDIO_BASS_ENABLED = booleanPreferencesKey("audio_bass_enabled")
+        val AUDIO_EQ_ENABLED = booleanPreferencesKey("audio_eq_enabled")
+        val AUDIO_VISUAL_STYLE = stringPreferencesKey("audio_visual_style")
+        val AUDIO_BASS_FOCUS = stringPreferencesKey("audio_bass_focus")
+        val BOOT_MEMORY_JSON = stringPreferencesKey("boot_memory_json")
+        val ACCENT_PRESET = stringPreferencesKey("accent_preset")
+        val BLUR_INTENSITY = floatPreferencesKey("blur_intensity")
+        val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
+        val REDUCE_ANIMATIONS = booleanPreferencesKey("reduce_animations")
+        val FLOATING_PILL_OPAQUE = booleanPreferencesKey("floating_pill_opaque")
         val CUSTOM_PROFILES = stringPreferencesKey("custom_profiles_json")
         val PER_APP_CONFIGS = stringPreferencesKey("per_app_configs_json")
         val CUSTOM_SPOOF_DEVICES = stringPreferencesKey("custom_spoof_devices_json")
-        val GAME_SPACE_JSON = stringPreferencesKey("game_space_json")
         val BATTERY_WHITELIST = stringPreferencesKey("battery_whitelist_json")
     }
 
     val settingsFlow: Flow<UserSettings> = context.ezdDataStore.data.map { prefs ->
-        val shortcutsRaw = prefs[Keys.PILL_SHORTCUTS].orEmpty()
-        val shortcuts = if (shortcutsRaw.isBlank()) listOf("Game Space", "Power", "Network")
-        else shortcutsRaw.split(",").map { it.trim() }.filter { it.isNotBlank() }
-
+        val savedProfile = prefs[Keys.ACTIVE_PROFILE] ?: "balanced"
+        val normalizedProfile = when (savedProfile) {
+            "dynamic" -> "balanced"
+            "max_performance" -> "performance"
+            else -> savedProfile
+        }
         UserSettings(
+            onboardingCompleted = prefs[Keys.ONBOARDING_DONE] ?: false,
+            userName = prefs[Keys.USER_NAME] ?: "Evorez User",
+            userTagline = prefs[Keys.USER_TAGLINE] ?: "Device Tuner",
+            userPhotoPath = prefs[Keys.USER_PHOTO_PATH] ?: "",
             themeMode = enumOrDefault(prefs[Keys.THEME_MODE], ThemeMode.DARK),
-            floatingPill = FloatingPillConfig(
-                enabled = prefs[Keys.PILL_ENABLED] ?: false,
-                position = enumOrDefault(prefs[Keys.PILL_POSITION], PillPosition.TOP_CENTER),
-                compactOpacity = prefs[Keys.PILL_OPACITY] ?: 0.88f,
-                shortcuts = shortcuts
-            ),
+            themeStyle = enumOrDefault(prefs[Keys.THEME_STYLE], EzdThemeStyle.AMOLED_OBSIDIAN),
+            animStyle = enumOrDefault(prefs[Keys.ANIM_STYLE], AppAnimStyle.IOS_CARD_MORPH),
+            workMode = enumOrDefault(prefs[Keys.WORK_MODE], WorkMode.AUTO),
+            dockPosition = enumOrDefault(prefs[Keys.DOCK_POSITION], DockPosition.BOTTOM),
             notifications = NotificationPrefs(
                 daemonAlerts = prefs[Keys.NOTIF_DAEMON] ?: true,
-                gameModeAlerts = prefs[Keys.NOTIF_GAME] ?: true,
                 batteryAlerts = prefs[Keys.NOTIF_BATTERY] ?: false,
                 unreadCount = prefs[Keys.NOTIF_UNREAD] ?: 0
             ),
-            activeProfileId = prefs[Keys.ACTIVE_PROFILE] ?: "balanced",
+            activeProfileId = normalizedProfile,
             daemonEnabled = prefs[Keys.DAEMON_ENABLED] ?: true,
             savedAudioPreset = prefs[Keys.AUDIO_PRESET] ?: "Dynamic",
-            gameSpace = parseGameSpace(prefs[Keys.GAME_SPACE_JSON].orEmpty())
+            audioBassEnabled = prefs[Keys.AUDIO_BASS_ENABLED] ?: true,
+            audioEqEnabled = prefs[Keys.AUDIO_EQ_ENABLED] ?: true,
+            audioVisualStyle = enumOrDefault(prefs[Keys.AUDIO_VISUAL_STYLE], AudioVisualStyle.BASS_PULSE),
+            audioBassFocus = prefs[Keys.AUDIO_BASS_FOCUS] ?: "Punch 60Hz",
+            bootMemory = parseBootMemory(prefs[Keys.BOOT_MEMORY_JSON].orEmpty()),
+            accentPreset = enumOrDefault(prefs[Keys.ACCENT_PRESET], AccentColorPreset.THEME_DEFAULT),
+            blurIntensity = (prefs[Keys.BLUR_INTENSITY] ?: 0.78f).coerceIn(0f, 1f),
+            hapticsEnabled = prefs[Keys.HAPTICS_ENABLED] ?: true,
+            reduceAnimations = prefs[Keys.REDUCE_ANIMATIONS] ?: false,
+            floatingPillOpaque = prefs[Keys.FLOATING_PILL_OPAQUE] ?: false
         )
     }
 
@@ -93,23 +132,53 @@ class SettingsDataStore(private val context: Context) {
         parseStringSet(prefs[Keys.BATTERY_WHITELIST].orEmpty())
     }
 
+    suspend fun saveUserProfile(
+        name: String,
+        tagline: String,
+        photoPath: String? = null,
+        markOnboardingDone: Boolean? = null
+    ) {
+        context.ezdDataStore.edit { prefs ->
+            prefs[Keys.USER_NAME] = name.trim().ifBlank { "Evorez User" }
+            prefs[Keys.USER_TAGLINE] = tagline.trim().ifBlank { "Device Tuner" }
+            if (photoPath != null) prefs[Keys.USER_PHOTO_PATH] = photoPath
+            if (markOnboardingDone != null) prefs[Keys.ONBOARDING_DONE] = markOnboardingDone
+        }
+    }
+
+    suspend fun setAnimStyle(style: AppAnimStyle) {
+        context.ezdDataStore.edit { it[Keys.ANIM_STYLE] = style.name }
+    }
+
+    suspend fun setWorkMode(mode: WorkMode) {
+        context.ezdDataStore.edit { it[Keys.WORK_MODE] = mode.name }
+    }
+
     suspend fun setThemeMode(mode: ThemeMode) {
         context.ezdDataStore.edit { it[Keys.THEME_MODE] = mode.name }
     }
 
-    suspend fun setFloatingPill(config: FloatingPillConfig) {
+    suspend fun setThemeStyle(style: EzdThemeStyle) {
         context.ezdDataStore.edit {
-            it[Keys.PILL_ENABLED] = config.enabled
-            it[Keys.PILL_POSITION] = config.position.name
-            it[Keys.PILL_OPACITY] = config.compactOpacity
-            it[Keys.PILL_SHORTCUTS] = config.shortcuts.joinToString(",")
+            it[Keys.THEME_STYLE] = style.name
+            val currentMode = enumOrDefault(it[Keys.THEME_MODE], ThemeMode.DARK)
+            if (currentMode != ThemeMode.LITE) {
+                it[Keys.THEME_MODE] = if (style.prefersDark) ThemeMode.DARK.name else ThemeMode.LIGHT.name
+            }
         }
+    }
+
+    suspend fun setDockPosition(pos: DockPosition) {
+        context.ezdDataStore.edit { it[Keys.DOCK_POSITION] = pos.name }
+    }
+
+    suspend fun setFloatingPillOpaque(opaque: Boolean) {
+        context.ezdDataStore.edit { it[Keys.FLOATING_PILL_OPAQUE] = opaque }
     }
 
     suspend fun setNotificationPrefs(prefsValue: NotificationPrefs) {
         context.ezdDataStore.edit {
             it[Keys.NOTIF_DAEMON] = prefsValue.daemonAlerts
-            it[Keys.NOTIF_GAME] = prefsValue.gameModeAlerts
             it[Keys.NOTIF_BATTERY] = prefsValue.batteryAlerts
             it[Keys.NOTIF_UNREAD] = prefsValue.unreadCount
         }
@@ -127,22 +196,49 @@ class SettingsDataStore(private val context: Context) {
         context.ezdDataStore.edit { it[Keys.AUDIO_PRESET] = preset }
     }
 
-    suspend fun saveGameSpace(cfg: GameSpaceConfig) {
-        val obj = JSONObject().apply {
-            put("enabled", cfg.enabled)
-            put("activeProfile", cfg.activeProfile.name)
-            put("cpuLockEnabled", cfg.cpuLockEnabled)
-            put("touchBoostEnabled", cfg.touchBoostEnabled)
-            put("foregroundPriorityEnabled", cfg.foregroundPriorityEnabled)
-            put("hbmBoostEnabled", cfg.hbmBoostEnabled)
-            put("disableHwOverlays", cfg.disableHwOverlays)
-            put("dndEnabled", cfg.dndEnabled)
-            put("sidePanelEnabled", cfg.sidePanelEnabled)
-            put("sidePanelRightSide", cfg.sidePanelRightSide)
-            put("sidePanelShortcuts", JSONArray(cfg.sidePanelShortcuts.map { it.name }))
-            put("selectedGames", JSONArray(cfg.selectedGames.toList()))
+    suspend fun setAudioFlags(
+        bassEnabled: Boolean? = null,
+        eqEnabled: Boolean? = null,
+        visualStyle: AudioVisualStyle? = null,
+        bassFocus: String? = null
+    ) {
+        context.ezdDataStore.edit { prefs ->
+            bassEnabled?.let { prefs[Keys.AUDIO_BASS_ENABLED] = it }
+            eqEnabled?.let { prefs[Keys.AUDIO_EQ_ENABLED] = it }
+            visualStyle?.let { prefs[Keys.AUDIO_VISUAL_STYLE] = it.name }
+            bassFocus?.let { prefs[Keys.AUDIO_BASS_FOCUS] = it }
         }
-        context.ezdDataStore.edit { it[Keys.GAME_SPACE_JSON] = obj.toString() }
+    }
+
+    suspend fun saveBootMemory(config: BootMemoryConfig) {
+        val obj = JSONObject().apply {
+            put("applyOnBoot", config.applyOnBoot)
+            put("savedProfileId", config.savedProfileId ?: "")
+            put("savedRefreshHz", config.savedRefreshHz?.toDouble() ?: -1.0)
+            put("savedDisableHwOverlays", config.savedDisableHwOverlays)
+            put("savedDnsHost", config.savedDnsHost ?: "")
+            put("savedDnsName", config.savedDnsName ?: "")
+            put("savedAudioPreset", config.savedAudioPreset ?: "")
+            put("lastCapturedAt", config.lastCapturedAt)
+            put("summary", config.summary)
+        }
+        context.ezdDataStore.edit { it[Keys.BOOT_MEMORY_JSON] = obj.toString() }
+    }
+
+    suspend fun setAccentPreset(preset: AccentColorPreset) {
+        context.ezdDataStore.edit { it[Keys.ACCENT_PRESET] = preset.name }
+    }
+
+    suspend fun setBlurIntensity(intensity: Float) {
+        context.ezdDataStore.edit { it[Keys.BLUR_INTENSITY] = intensity.coerceIn(0f, 1f) }
+    }
+
+    suspend fun setHapticsEnabled(enabled: Boolean) {
+        context.ezdDataStore.edit { it[Keys.HAPTICS_ENABLED] = enabled }
+    }
+
+    suspend fun setReduceAnimations(reduce: Boolean) {
+        context.ezdDataStore.edit { it[Keys.REDUCE_ANIMATIONS] = reduce }
     }
 
     suspend fun saveBatteryWhitelist(pkgs: Set<String>) {
@@ -176,7 +272,6 @@ class SettingsDataStore(private val context: Context) {
                 put("profileId", c.profileId)
                 put("gpuProfile", c.gpuProfile)
                 put("refreshRateHz", c.refreshRateHz?.toDouble() ?: -1.0)
-                put("gameModeAssigned", c.gameModeAssigned)
                 put("spoofPresetId", c.spoofPresetId ?: "")
                 put("dnsMode", c.dnsMode.name)
                 put("customDnsServer", c.customDnsServer)
@@ -206,78 +301,102 @@ class SettingsDataStore(private val context: Context) {
 
     suspend fun exportConfigurationJson(): JSONObject {
         return context.ezdDataStore.data.map { p ->
+            val photoPath = p[Keys.USER_PHOTO_PATH].orEmpty()
+            val photoB64 = runCatching {
+                if (photoPath.isNotBlank()) {
+                    val f = java.io.File(photoPath)
+                    if (f.exists() && f.length() in 1L..2_000_000L) {
+                        android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP)
+                    } else ""
+                } else ""
+            }.getOrDefault("")
             JSONObject().apply {
+                put("onboardingCompleted", p[Keys.ONBOARDING_DONE] ?: false)
+                put("userName", p[Keys.USER_NAME] ?: "Evorez User")
+                put("userTagline", p[Keys.USER_TAGLINE] ?: "Device Tuner")
+                put("userPhotoBase64", photoB64)
                 put("themeMode", p[Keys.THEME_MODE] ?: ThemeMode.DARK.name)
+                put("themeStyle", p[Keys.THEME_STYLE] ?: EzdThemeStyle.AMOLED_OBSIDIAN.name)
+                put("animStyle", p[Keys.ANIM_STYLE] ?: AppAnimStyle.IOS_CARD_MORPH.name)
+                put("workMode", p[Keys.WORK_MODE] ?: WorkMode.AUTO.name)
+                put("dockPosition", p[Keys.DOCK_POSITION] ?: DockPosition.BOTTOM.name)
                 put("activeProfile", p[Keys.ACTIVE_PROFILE] ?: "balanced")
                 put("daemonEnabled", p[Keys.DAEMON_ENABLED] ?: true)
                 put("audioPreset", p[Keys.AUDIO_PRESET] ?: "Dynamic")
-                put("pillEnabled", p[Keys.PILL_ENABLED] ?: false)
-                put("pillPosition", p[Keys.PILL_POSITION] ?: PillPosition.TOP_CENTER.name)
-                put("pillOpacity", p[Keys.PILL_OPACITY]?.toDouble() ?: 0.88)
-                put("pillShortcuts", p[Keys.PILL_SHORTCUTS] ?: "Game Space,Power,Network")
+                put("bootMemory", p[Keys.BOOT_MEMORY_JSON] ?: "")
+                put("accentPreset", p[Keys.ACCENT_PRESET] ?: AccentColorPreset.THEME_DEFAULT.name)
+                put("blurIntensity", (p[Keys.BLUR_INTENSITY] ?: 0.78f).toDouble())
+                put("hapticsEnabled", p[Keys.HAPTICS_ENABLED] ?: true)
+                put("reduceAnimations", p[Keys.REDUCE_ANIMATIONS] ?: false)
+                put("floatingPillOpaque", p[Keys.FLOATING_PILL_OPAQUE] ?: false)
                 put("notifDaemon", p[Keys.NOTIF_DAEMON] ?: true)
-                put("notifGame", p[Keys.NOTIF_GAME] ?: true)
                 put("notifBattery", p[Keys.NOTIF_BATTERY] ?: false)
                 put("customProfiles", p[Keys.CUSTOM_PROFILES] ?: "[]")
                 put("perAppConfigs", p[Keys.PER_APP_CONFIGS] ?: "[]")
                 put("customSpoofDevices", p[Keys.CUSTOM_SPOOF_DEVICES] ?: "[]")
-                put("gameSpace", p[Keys.GAME_SPACE_JSON] ?: "{}")
                 put("batteryWhitelist", p[Keys.BATTERY_WHITELIST] ?: "[]")
             }
         }.first()
     }
 
     suspend fun importConfigurationJson(obj: JSONObject) {
+        val photoB64 = obj.optString("userPhotoBase64", "")
+        var restoredPhotoPath: String? = null
+        if (photoB64.isNotBlank()) {
+            runCatching {
+                val bytes = android.util.Base64.decode(photoB64, android.util.Base64.NO_WRAP)
+                if (bytes.isNotEmpty()) {
+                    val out = java.io.File(context.filesDir, "user_profile.jpg")
+                    out.writeBytes(bytes)
+                    restoredPhotoPath = out.absolutePath
+                }
+            }
+        }
         context.ezdDataStore.edit { prefs ->
+            if (obj.has("onboardingCompleted")) {
+                prefs[Keys.ONBOARDING_DONE] = obj.optBoolean("onboardingCompleted", true)
+            }
+            obj.optString("userName").takeIf { it.isNotBlank() }?.let { prefs[Keys.USER_NAME] = it }
+            obj.optString("userTagline").takeIf { it.isNotBlank() }?.let { prefs[Keys.USER_TAGLINE] = it }
+            restoredPhotoPath?.let { prefs[Keys.USER_PHOTO_PATH] = it }
             obj.optString("themeMode").takeIf { it.isNotBlank() }?.let { prefs[Keys.THEME_MODE] = it }
+            obj.optString("themeStyle").takeIf { it.isNotBlank() }?.let { prefs[Keys.THEME_STYLE] = it }
+            obj.optString("animStyle").takeIf { it.isNotBlank() }?.let { prefs[Keys.ANIM_STYLE] = it }
+            obj.optString("workMode").takeIf { it.isNotBlank() }?.let { prefs[Keys.WORK_MODE] = it }
+            obj.optString("dockPosition").takeIf { it.isNotBlank() }?.let { prefs[Keys.DOCK_POSITION] = it }
             obj.optString("activeProfile").takeIf { it.isNotBlank() }?.let { prefs[Keys.ACTIVE_PROFILE] = it }
             if (obj.has("daemonEnabled")) prefs[Keys.DAEMON_ENABLED] = obj.optBoolean("daemonEnabled", true)
             obj.optString("audioPreset").takeIf { it.isNotBlank() }?.let { prefs[Keys.AUDIO_PRESET] = it }
-            if (obj.has("pillEnabled")) prefs[Keys.PILL_ENABLED] = obj.optBoolean("pillEnabled", false)
-            obj.optString("pillPosition").takeIf { it.isNotBlank() }?.let { prefs[Keys.PILL_POSITION] = it }
+            obj.optString("bootMemory").takeIf { it.isNotBlank() }?.let { prefs[Keys.BOOT_MEMORY_JSON] = it }
+            obj.optString("accentPreset").takeIf { it.isNotBlank() }?.let { prefs[Keys.ACCENT_PRESET] = it }
+            if (obj.has("blurIntensity")) prefs[Keys.BLUR_INTENSITY] = obj.optDouble("blurIntensity", 0.78).toFloat().coerceIn(0f, 1f)
+            if (obj.has("hapticsEnabled")) prefs[Keys.HAPTICS_ENABLED] = obj.optBoolean("hapticsEnabled", true)
+            if (obj.has("reduceAnimations")) prefs[Keys.REDUCE_ANIMATIONS] = obj.optBoolean("reduceAnimations", false)
+            if (obj.has("floatingPillOpaque")) prefs[Keys.FLOATING_PILL_OPAQUE] = obj.optBoolean("floatingPillOpaque", false)
             obj.optString("customProfiles").takeIf { it.isNotBlank() }?.let { prefs[Keys.CUSTOM_PROFILES] = it }
             obj.optString("perAppConfigs").takeIf { it.isNotBlank() }?.let { prefs[Keys.PER_APP_CONFIGS] = it }
             obj.optString("customSpoofDevices").takeIf { it.isNotBlank() }?.let { prefs[Keys.CUSTOM_SPOOF_DEVICES] = it }
-            obj.optString("gameSpace").takeIf { it.isNotBlank() }?.let { prefs[Keys.GAME_SPACE_JSON] = it }
             obj.optString("batteryWhitelist").takeIf { it.isNotBlank() }?.let { prefs[Keys.BATTERY_WHITELIST] = it }
         }
     }
 
-    private fun parseGameSpace(raw: String): GameSpaceConfig {
-        if (raw.isBlank()) return GameSpaceConfig()
+    private fun parseBootMemory(raw: String): BootMemoryConfig {
+        if (raw.isBlank()) return BootMemoryConfig()
         return runCatching {
             val o = JSONObject(raw)
-            val shortcutsArr = o.optJSONArray("sidePanelShortcuts")
-            val shortcuts = if (shortcutsArr != null) {
-                buildSet {
-                    for (i in 0 until shortcutsArr.length()) {
-                        runCatching { enumValueOf<GamePanelShortcut>(shortcutsArr.getString(i)) }.getOrNull()?.let { add(it) }
-                    }
-                }.ifEmpty { GameSpaceConfig().sidePanelShortcuts }
-            } else GameSpaceConfig().sidePanelShortcuts
-
-            val gamesArr = o.optJSONArray("selectedGames")
-            val games = if (gamesArr != null) {
-                buildSet {
-                    for (i in 0 until gamesArr.length()) add(gamesArr.getString(i))
-                }
-            } else emptySet()
-
-            GameSpaceConfig(
-                enabled = o.optBoolean("enabled", true),
-                activeProfile = enumOrDefault(o.optString("activeProfile"), GameProfileId.BALANCED),
-                cpuLockEnabled = o.optBoolean("cpuLockEnabled", false),
-                touchBoostEnabled = o.optBoolean("touchBoostEnabled", false),
-                foregroundPriorityEnabled = o.optBoolean("foregroundPriorityEnabled", false),
-                hbmBoostEnabled = o.optBoolean("hbmBoostEnabled", false),
-                disableHwOverlays = o.optBoolean("disableHwOverlays", false),
-                dndEnabled = o.optBoolean("dndEnabled", false),
-                sidePanelEnabled = o.optBoolean("sidePanelEnabled", false),
-                sidePanelRightSide = o.optBoolean("sidePanelRightSide", true),
-                sidePanelShortcuts = shortcuts,
-                selectedGames = games
+            val hz = o.optDouble("savedRefreshHz", -1.0)
+            BootMemoryConfig(
+                applyOnBoot = o.optBoolean("applyOnBoot", false),
+                savedProfileId = o.optString("savedProfileId", "").ifBlank { null },
+                savedRefreshHz = if (hz > 0.0) hz.toFloat() else null,
+                savedDisableHwOverlays = o.optBoolean("savedDisableHwOverlays", false),
+                savedDnsHost = o.optString("savedDnsHost", "").ifBlank { null },
+                savedDnsName = o.optString("savedDnsName", "").ifBlank { null },
+                savedAudioPreset = o.optString("savedAudioPreset", "").ifBlank { null },
+                lastCapturedAt = o.optLong("lastCapturedAt", 0L),
+                summary = o.optString("summary", "No boot snapshot saved yet")
             )
-        }.getOrDefault(GameSpaceConfig())
+        }.getOrDefault(BootMemoryConfig())
     }
 
     private fun parseStringSet(raw: String): Set<String> {
@@ -332,7 +451,6 @@ class SettingsDataStore(private val context: Context) {
                             profileId = o.optString("profileId", "balanced"),
                             gpuProfile = o.optString("gpuProfile", ""),
                             refreshRateHz = if (hz > 0.0) hz.toFloat() else null,
-                            gameModeAssigned = o.optBoolean("gameModeAssigned", false),
                             spoofPresetId = o.optString("spoofPresetId", "").ifBlank { null },
                             dnsMode = enumOrDefault(o.optString("dnsMode"), PerAppDnsMode.SYSTEM),
                             customDnsServer = o.optString("customDnsServer", "1.1.1.1"),

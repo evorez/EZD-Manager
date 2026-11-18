@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import com.evorez.ezdmanager.model.*
+import com.evorez.ezdmanager.root.CommandBridge
 import com.evorez.ezdmanager.root.RootShellManager
 import kotlin.math.roundToInt
 
@@ -24,8 +25,6 @@ class SystemToolsRepository(private val context: Context) {
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
-
-    private var prevSfTimestamps: List<Long> = emptyList()
 
     companion object {
         val BUILT_IN_SPOOF_PRESETS = listOf(
@@ -153,69 +152,97 @@ class SystemToolsRepository(private val context: Context) {
         return if (ok) true to "TCP Rescue applied (restored $target)" else false to msg
     }
 
-    suspend fun applyDnsPreset(preset: DnsPreset): Pair<Boolean, String> {
+    suspend fun applyDnsPreset(
+        preset: DnsPreset,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val cmd = if (preset.id == "off" || preset.hostname.isBlank()) {
             "settings put global private_dns_mode opportunistic; settings delete global private_dns_specifier"
         } else {
             val qHost = RootShellManager.shellQuote(preset.hostname)
             "settings put global private_dns_mode hostname; settings put global private_dns_specifier $qHost"
         }
-        val res = RootShellManager.exec(cmd)
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
         return if (res.success) {
             true to if (preset.id == "off") "Private DNS restored to system default" else "Private DNS set to ${preset.name}"
         } else {
-            false to "Changing Private DNS requires root access"
+            false to "Changing Private DNS requires Root or Shizuku"
         }
     }
 
-    suspend fun resetNetworkSettings(availableTcp: List<String>): Pair<Boolean, String> {
-        val (_, dnsMsg) = applyDnsPreset(DNS_PRESETS.last())
-        val (_, tcpMsg) = applyTcpRescuePreset(availableTcp)
+    suspend fun resetNetworkSettings(
+        availableTcp: List<String>,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
+        val (_, dnsMsg) = applyDnsPreset(DNS_PRESETS.last(), rootGranted, shizukuGranted)
+        val (_, tcpMsg) = if (rootGranted) applyTcpRescuePreset(availableTcp) else false to "TCP unchanged"
         return true to "$dnsMsg · $tcpMsg"
     }
 
     // --- Battery Saving Tools (Phase 10) ---
-    suspend fun applyGmsBackgroundManagement(restrictNonEssential: Boolean): Pair<Boolean, String> {
+    suspend fun applyGmsBackgroundManagement(
+        restrictNonEssential: Boolean,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         // Safely tune non-essential telemetry/analytics standby without killing auth/FCM/Play Services!
         val bucket = if (restrictNonEssential) "rare" else "active"
         val cmd = "am set-standby-bucket com.google.android.gms.feedback $bucket 2>/dev/null; " +
             "am set-standby-bucket com.google.android.partnersetup $bucket 2>/dev/null; " +
             "echo OK"
-        val res = RootShellManager.exec(cmd, timeoutMs = 3_500L)
+        val res = CommandBridge.execPrivileged(
+            cmd,
+            useRoot = rootGranted,
+            useShizuku = shizukuGranted,
+            timeoutMs = 3_500L
+        )
         return if (res.success) {
             true to "GMS non-essential telemetry set to $bucket bucket (Auth & Push notifications protected)"
         } else {
-            false to "GMS background tuning requires root access"
+            false to "GMS background tuning requires Root or Shizuku"
         }
     }
 
-    suspend fun applyBackgroundAppLimit(preset: String): Pair<Boolean, String> {
+    suspend fun applyBackgroundAppLimit(
+        preset: String,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val cmd = when (preset) {
             "Strict" -> "settings put global cached_apps_freezer enabled; settings put global app_standby_enabled 1"
             "Balanced" -> "settings put global cached_apps_freezer device_default; settings put global app_standby_enabled 1"
             else -> "settings delete global cached_apps_freezer; settings put global app_standby_enabled 1"
         }
-        val res = RootShellManager.exec(cmd)
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
         return if (res.success) true to "Background app limit preset set to $preset"
-        else false to "Background limit requires root access"
+        else false to "Background limit requires Root or Shizuku"
     }
 
-    suspend fun runSafeMemoryTrim(apps: List<AppEntry>, whitelist: Set<String>): Pair<Boolean, String> {
+    suspend fun runSafeMemoryTrim(
+        apps: List<AppEntry>,
+        whitelist: Set<String>,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val targets = apps.filter { !it.isSystemApp && it.packageName !in whitelist }.take(15)
         if (targets.isEmpty()) return true to "No non-whitelisted user apps to trim"
         val cmds = targets.joinToString("; ") {
             val q = RootShellManager.shellQuote(it.packageName)
             "am send-trim-memory $q BACKGROUND 2>/dev/null"
-        }
-        val res = RootShellManager.exec(cmds, timeoutMs = 5_000L)
+        } + "; echo OK"
+        val res = CommandBridge.execPrivileged(cmds, useRoot = rootGranted, useShizuku = shizukuGranted, timeoutMs = 5_000L)
         return if (res.success) true to "Sent safe Android memory trim to ${targets.size} non-whitelisted apps"
-        else false to "Memory trim requires root access"
+        else false to "Memory trim requires Root or Shizuku"
     }
 
     suspend fun setAppBackgroundRestriction(
         packageName: String,
         restrict: Boolean,
-        whitelist: Set<String>
+        whitelist: Set<String>,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
     ): Pair<Boolean, String> {
         if (restrict && packageName in whitelist) {
             return false to "$packageName is protected on the Whitelist and will not be restricted."
@@ -223,71 +250,86 @@ class SystemToolsRepository(private val context: Context) {
         val qPkg = RootShellManager.shellQuote(packageName)
         val mode = if (restrict) "ignore" else "allow"
         val cmd = "cmd appops set $qPkg RUN_IN_BACKGROUND $mode && cmd appops set $qPkg RUN_ANY_IN_BACKGROUND $mode"
-        val res = RootShellManager.exec(cmd)
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
         return if (res.success) {
             true to "${if (restrict) "Restricted" else "Unrestricted"} background activity for $packageName"
         } else {
-            false to "Background restriction requires root access"
+            false to "Background restriction requires Root or Shizuku"
         }
     }
 
-    // --- Audio Enhancer (Phase 8: Genuine center frequencies in Hz) ---
-    fun initAudioEngine(savedPreset: String = "Dynamic"): AudioState {
+    // --- Audio Enhancer (Phase 8: Genuine Hz bands + independent Bass Enhancer) ---
+    fun initAudioEngine(
+        savedPreset: String = "Dynamic",
+        bassEnabled: Boolean = true,
+        eqEnabled: Boolean = true,
+        visualStyle: AudioVisualStyle = AudioVisualStyle.BASS_PULSE,
+        bassFocus: String = "Punch 60Hz"
+    ): AudioState {
         val availableEffects = runCatching { AudioEffect.queryEffects()?.toList().orEmpty() }.getOrDefault(emptyList())
         val hasEq = availableEffects.any { it.type == AudioEffect.EFFECT_TYPE_EQUALIZER }
         val hasBass = availableEffects.any { it.type == AudioEffect.EFFECT_TYPE_BASS_BOOST }
         val hasLoud = availableEffects.any { it.type == AudioEffect.EFFECT_TYPE_LOUDNESS_ENHANCER }
-        if (!hasEq) {
-            return AudioState(
-                engineReady = false,
-                statusNote = "Device audio HAL does not expose a global Equalizer DSP effect."
-            )
+
+        if (hasEq && equalizer == null) {
+            equalizer = runCatching { Equalizer(0, 0).apply { enabled = eqEnabled } }.getOrNull()
         }
-        return runCatching {
-            if (equalizer == null) {
-                equalizer = Equalizer(0, 0).apply { enabled = true }
-            }
-            if (hasBass && bassBoost == null) {
-                bassBoost = runCatching { BassBoost(0, 0).apply { enabled = true } }.getOrNull()
-            }
-            if (hasLoud && loudnessEnhancer == null) {
-                loudnessEnhancer = runCatching { LoudnessEnhancer(0).apply { enabled = true } }.getOrNull()
-            }
-            val eq = equalizer ?: return@runCatching AudioState(
-                engineReady = false,
-                statusNote = "AudioFlinger global session rejected Equalizer attachment."
-            )
-            val count = eq.numberOfBands.toInt().coerceIn(1, 10)
-            val freqs = (0 until count).map { (eq.getCenterFreq(it.toShort()) / 1000).coerceAtLeast(1) }
-            val levels = (0 until count).map { eq.getBandLevel(it.toShort()).toInt() }
-            val baseState = AudioState(
-                activePreset = savedPreset,
-                bassStrength = bassBoost?.roundedStrength?.toInt() ?: 300,
-                loudnessGainMb = 0,
-                bandLevels = levels,
-                bandsHz = freqs,
-                engineReady = true,
-                statusNote = "Attached to hardware AudioEffect (${count} bands)"
-            )
-            applyAudioPreset(savedPreset, baseState)
-        }.getOrElse {
-            releaseAudio()
-            AudioState(
-                engineReady = false,
-                statusNote = "AudioEffect global session unavailable on this Android runtime."
-            )
+        if (hasBass && bassBoost == null) {
+            bassBoost = runCatching { BassBoost(0, 0).apply { enabled = bassEnabled } }.getOrNull()
         }
+        if (hasLoud && loudnessEnhancer == null) {
+            loudnessEnhancer = runCatching { LoudnessEnhancer(0).apply { enabled = eqEnabled } }.getOrNull()
+        }
+
+        val eq = equalizer
+        val bb = bassBoost
+        val eqReady = eq != null
+        val bassReady = bb != null
+
+        val count = if (eq != null) eq.numberOfBands.toInt().coerceIn(1, 10) else 5
+        val freqs = if (eq != null) {
+            (0 until count).map { (eq.getCenterFreq(it.toShort()) / 1000).coerceAtLeast(1) }
+        } else {
+            listOf(60, 230, 910, 3600, 14000)
+        }
+        val levels = if (eq != null) {
+            (0 until count).map { eq.getBandLevel(it.toShort()).toInt() }
+        } else {
+            listOf(200, 100, 50, 150, 250)
+        }
+
+        val note = when {
+            eqReady && bassReady -> "Hardware Equalizer (${count} bands) & BassBoost DSP attached"
+            bassReady -> "Hardware BassBoost DSP active (Equalizer session unavailable)"
+            eqReady -> "Hardware Equalizer (${count} bands) active"
+            else -> "Hardware global AudioEffect DSP not exposed on this ROM — tuning curves staged"
+        }
+
+        val baseState = AudioState(
+            activePreset = savedPreset,
+            bassEnabled = bassEnabled,
+            equalizerEnabled = eqEnabled,
+            bassStrength = bb?.roundedStrength?.toInt() ?: 420,
+            bassFrequencyFocus = bassFocus,
+            loudnessGainMb = 150,
+            visualStyle = visualStyle,
+            bandLevels = levels,
+            bandsHz = freqs,
+            engineReady = eqReady,
+            bassEngineReady = bassReady,
+            statusNote = note
+        )
+        return applyAudioPreset(savedPreset, baseState)
     }
 
     fun applyAudioPreset(presetName: String, current: AudioState): AudioState {
-        if (!current.engineReady) return current.copy(activePreset = presetName)
-        val bandCount = current.bandsHz.size.coerceAtLeast(1)
+        val bandCount = current.bandsHz.size.coerceAtLeast(5)
         val template = when (presetName) {
-            "Bass" -> listOf(800, 500, 0, -100, 100)
-            "Vocal" -> listOf(-200, 200, 650, 550, 150)
-            "Music" -> listOf(450, 250, 100, 350, 500)
-            "Dynamic" -> listOf(550, 200, 300, 450, 600)
-            "Gaming" -> listOf(350, 150, 400, 700, 650)
+            "Bass" -> listOf(850, 520, 40, -80, 140)
+            "Vocal" -> listOf(-180, 220, 680, 560, 160)
+            "Music" -> listOf(460, 260, 120, 380, 520)
+            "Dynamic" -> listOf(560, 220, 300, 460, 620)
+            "Gaming" -> listOf(380, 160, 420, 720, 660)
             else -> List(bandCount) { 0 }
         }
         val mappedLevels = List(bandCount) { idx ->
@@ -295,43 +337,82 @@ class SystemToolsRepository(private val context: Context) {
             template[mappedIdx]
         }
         val bass = when (presetName) {
-            "Bass" -> 850
-            "Gaming" -> 600
-            "Dynamic" -> 500
-            "Music" -> 450
-            "Vocal" -> 150
+            "Bass" -> 860
+            "Gaming" -> 620
+            "Dynamic" -> 520
+            "Music" -> 460
+            "Vocal" -> 180
             else -> 0
         }
         val loud = when (presetName) {
             "Gaming" -> 500
             "Dynamic" -> 350
-            "Bass" -> 250
+            "Bass" -> 280
             else -> 150
         }
-        applyAudioParams(mappedLevels, bass, loud)
+        val suggestedStyle = when (presetName) {
+            "Bass" -> AudioVisualStyle.BASS_PULSE
+            "Vocal", "Music" -> AudioVisualStyle.SILK_WAVE
+            "Gaming" -> AudioVisualStyle.CYBER_MATRIX
+            else -> AudioVisualStyle.PRISM_BARS
+        }
+        applyAudioParams(
+            levels = mappedLevels,
+            bassStrength = bass,
+            loudnessMb = loud,
+            bassEnabled = current.bassEnabled,
+            eqEnabled = current.equalizerEnabled,
+            bassFocus = current.bassFrequencyFocus
+        )
         return current.copy(
             activePreset = presetName,
             bandLevels = mappedLevels,
             bassStrength = bass,
-            loudnessGainMb = loud
+            loudnessGainMb = loud,
+            visualStyle = suggestedStyle
         )
     }
 
-    fun applyAudioParams(levels: List<Int>, bassStrength: Int, loudnessMb: Int) {
+    fun applyAudioParams(
+        levels: List<Int>,
+        bassStrength: Int,
+        loudnessMb: Int,
+        bassEnabled: Boolean = true,
+        eqEnabled: Boolean = true,
+        bassFocus: String = "Punch 60Hz"
+    ) {
         runCatching {
-            val eq = equalizer ?: return@runCatching
-            val range = eq.bandLevelRange
-            val min = range[0].toInt()
-            val max = range[1].toInt()
-            levels.forEachIndexed { idx, lvl ->
-                if (idx < eq.numberOfBands) {
-                    eq.setBandLevel(idx.toShort(), lvl.coerceIn(min, max).toShort())
+            val focusBoost = when (bassFocus) {
+                "Sub 40Hz" -> 220
+                "Warm 90Hz" -> 120
+                else -> 170
+            }
+            equalizer?.let { eq ->
+                eq.enabled = eqEnabled
+                if (eqEnabled) {
+                    val range = eq.bandLevelRange
+                    val min = range[0].toInt()
+                    val max = range[1].toInt()
+                    levels.forEachIndexed { idx, lvl ->
+                        if (idx < eq.numberOfBands) {
+                            val adjusted = if (bassEnabled && idx == 0) lvl + (focusBoost * bassStrength / 1000) else lvl
+                            eq.setBandLevel(idx.toShort(), adjusted.coerceIn(min, max).toShort())
+                        }
+                    }
                 }
             }
             bassBoost?.let { bb ->
-                if (bb.strengthSupported) bb.setStrength(bassStrength.coerceIn(0, 1000).toShort())
+                bb.enabled = bassEnabled
+                if (bassEnabled && bb.strengthSupported) {
+                    bb.setStrength(bassStrength.coerceIn(0, 1000).toShort())
+                }
             }
-            loudnessEnhancer?.setTargetGain(loudnessMb.coerceIn(0, 1200))
+            loudnessEnhancer?.let { le ->
+                le.enabled = eqEnabled
+                if (eqEnabled) {
+                    le.setTargetGain(loudnessMb.coerceIn(0, 1200))
+                }
+            }
         }
     }
 
@@ -342,57 +423,6 @@ class SystemToolsRepository(private val context: Context) {
         equalizer = null
         bassBoost = null
         loudnessEnhancer = null
-    }
-
-    // --- Genuine FPS Meter (Phase 12F: Never confuse refresh rate with game FPS) ---
-    suspend fun readGenuineFps(): FpsReading {
-        // 1. Check kernel measured_fps sysfs nodes (Qualcomm / DRM / MediaTek)
-        val sysfsRes = RootShellManager.exec(
-            "for p in /sys/class/drm/sde-crtc-0/measured_fps /sys/class/graphics/fb0/measured_fps /sys/kernel/fps/fps; do " +
-                "if [ -r \"${'$'}p\" ]; then echo \"SYS|${'$'}p|$(cat \"${'$'}p\" 2>/dev/null)\"; break; fi; done",
-            timeoutMs = 2_000L
-        )
-        sysfsRes.stdout.firstOrNull { it.startsWith("SYS|") }?.let { line ->
-            val parts = line.split('|', limit = 3)
-            val valNum = Regex("([0-9]+(?:\\.[0-9]+)?)").find(parts.getOrNull(2).orEmpty())
-                ?.groupValues?.getOrNull(1)?.toFloatOrNull()?.roundToInt()
-            if (valNum != null && valNum > 0) {
-                return FpsReading(fps = valNum, source = parts[1])
-            }
-        }
-
-        // 2. Fallback: SurfaceFlinger --latency timestamps
-        val sfRes = RootShellManager.exec("dumpsys SurfaceFlinger --latency 2>/dev/null | tail -n +2", timeoutMs = 2_000L)
-        if (sfRes.success && sfRes.stdout.size >= 4) {
-            val timestamps = sfRes.stdout.mapNotNull { row ->
-                val cols = row.trim().split(Regex("\\s+"))
-                val presentNs = cols.getOrNull(1)?.toLongOrNull()
-                presentNs?.takeIf { it > 0L && it != Long.MAX_VALUE }
-            }.distinct().sorted()
-            if (timestamps.size >= 4) {
-                val deltasMs = timestamps.zipWithNext { a, b -> (b - a) / 1_000_000.0 }
-                    .filter { it in 4.0..250.0 }
-                if (deltasMs.isNotEmpty()) {
-                    val avgMs = deltasMs.average()
-                    val avgFps = (1000.0 / avgMs).roundToInt().coerceIn(1, 240)
-                    val minFps = (1000.0 / deltasMs.max()).roundToInt().coerceIn(1, avgFps)
-                    val maxFps = (1000.0 / deltasMs.min()).roundToInt().coerceIn(avgFps, 240)
-                    prevSfTimestamps = timestamps
-                    return FpsReading(
-                        fps = avgFps,
-                        minFps = minFps,
-                        avgFps = avgFps,
-                        maxFps = maxFps,
-                        source = "SurfaceFlinger Frame Latency"
-                    )
-                }
-            }
-        }
-
-        return FpsReading(
-            fps = null,
-            source = "FPS unavailable (requires active surface + root SurfaceFlinger/kernel access)"
-        )
     }
 
     // --- Device Spoof (Phase 7) ---
@@ -493,35 +523,55 @@ class SystemToolsRepository(private val context: Context) {
             .sortedWith(compareBy<AppEntry> { it.isSystemApp }.thenBy { it.label.lowercase() })
     }
 
-    suspend fun clearAppCache(packageName: String): Pair<Boolean, String> {
+    suspend fun clearAppCache(
+        packageName: String,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val qPkg = RootShellManager.shellQuote(packageName)
-        val res = RootShellManager.exec(
+        val cmd = if (rootGranted) {
             "rm -rf /data/user/0/$packageName/cache/* /sdcard/Android/data/$packageName/cache/* 2>/dev/null; pm trim-caches 128M >/dev/null 2>&1; echo OK"
-        )
-        return if (res.success) true to "Cleared cache for $packageName" else false to "Cache clear requires root ($qPkg)"
+        } else {
+            "rm -rf /sdcard/Android/data/$packageName/cache/* 2>/dev/null; pm trim-caches 128M >/dev/null 2>&1; echo OK"
+        }
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
+        return if (res.success) true to "Cleared cache for $packageName" else false to "Cache clear requires Root or Shizuku ($qPkg)"
     }
 
-    suspend fun forceStopApp(packageName: String): Pair<Boolean, String> {
+    suspend fun forceStopApp(
+        packageName: String,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val qPkg = RootShellManager.shellQuote(packageName)
-        val res = RootShellManager.exec("am force-stop $qPkg")
-        return if (res.success) true to "Force stopped $packageName" else false to "Force stop requires root"
+        val res = CommandBridge.execPrivileged("am force-stop $qPkg", useRoot = rootGranted, useShizuku = shizukuGranted)
+        return if (res.success) true to "Force stopped $packageName" else false to "Force stop requires Root or Shizuku"
     }
 
-    suspend fun toggleFreezeApp(packageName: String, freeze: Boolean): Pair<Boolean, String> {
+    suspend fun toggleFreezeApp(
+        packageName: String,
+        freeze: Boolean,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val qPkg = RootShellManager.shellQuote(packageName)
         val cmd = if (freeze) "pm disable-user --user 0 $qPkg" else "pm enable $qPkg"
-        val res = RootShellManager.exec(cmd)
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
         return if (res.success) {
             true to "${if (freeze) "Frozen" else "Unfrozen"} $packageName"
         } else {
-            false to "Freeze/unfreeze failed: ${res.combinedText.ifBlank { "Requires root" }}"
+            false to "Freeze/unfreeze failed: ${res.combinedText.ifBlank { "Requires Root or Shizuku" }}"
         }
     }
 
-    suspend fun uninstallApp(app: AppEntry): Pair<Boolean, String> {
+    suspend fun uninstallApp(
+        app: AppEntry,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val qPkg = RootShellManager.shellQuote(app.packageName)
         val cmd = if (app.isSystemApp) "pm uninstall -k --user 0 $qPkg" else "pm uninstall $qPkg"
-        val res = RootShellManager.exec(cmd)
-        return if (res.success) true to "Uninstalled ${app.label}" else false to "Uninstall failed: ${res.combinedText.ifBlank { "Requires root" }}"
+        val res = CommandBridge.execPrivileged(cmd, useRoot = rootGranted, useShizuku = shizukuGranted)
+        return if (res.success) true to "Uninstalled ${app.label}" else false to "Uninstall failed: ${res.combinedText.ifBlank { "Requires Root or Shizuku" }}"
     }
 }

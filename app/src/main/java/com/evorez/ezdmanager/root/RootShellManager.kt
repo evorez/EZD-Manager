@@ -91,30 +91,46 @@ object RootShellManager {
         }
     }
 
-    suspend fun exec(command: String, timeoutMs: Long = 6_000L): CommandResult {
+    /**
+     * Executes command through the primary Root (su) shell.
+     * If root is unavailable or denied and allowShizukuSecondary is true,
+     * it seamlessly routes through the secondary Shizuku execution path.
+     */
+    suspend fun exec(
+        command: String,
+        timeoutMs: Long = 6_000L,
+        allowShizukuSecondary: Boolean = true
+    ): CommandResult {
         if (command.isBlank() || command.contains('\u0000')) {
             return CommandResult(false, -1, emptyList(), emptyList(), error = "Invalid command input")
         }
         return withContext(dispatcher) {
             try {
                 withTimeout(timeoutMs) {
-                    val shell = rootShell?.takeIf { it.isAlive } ?: Shell.getShell().also { rootShell = it }
-                    if (!shell.isRoot) {
+                    val shell = rootShell?.takeIf { it.isAlive } ?: runCatching { Shell.getShell() }.getOrNull()?.also { rootShell = it }
+                    if (shell != null && shell.isRoot) {
+                        commandCounter.incrementAndGet()
+                        val result = shell.newJob().add(command).exec()
                         return@withTimeout CommandResult(
-                            success = false,
-                            exitCode = 126,
-                            stdout = emptyList(),
-                            stderr = emptyList(),
-                            error = "Root access is not granted"
+                            success = result.isSuccess,
+                            exitCode = result.code,
+                            stdout = result.out,
+                            stderr = result.err
                         )
                     }
-                    commandCounter.incrementAndGet()
-                    val result = shell.newJob().add(command).exec()
+
+                    // Secondary Execution Path: Shizuku
+                    if (allowShizukuSecondary && ShizukuManager.isPermissionGranted()) {
+                        commandCounter.incrementAndGet()
+                        return@withTimeout ShizukuManager.exec(command, timeoutMs)
+                    }
+
                     CommandResult(
-                        success = result.isSuccess,
-                        exitCode = result.code,
-                        stdout = result.out,
-                        stderr = result.err
+                        success = false,
+                        exitCode = 126,
+                        stdout = emptyList(),
+                        stderr = emptyList(),
+                        error = if (allowShizukuSecondary) "Neither Root nor Shizuku access is granted" else "Root access is not granted"
                     )
                 }
             } catch (ce: CancellationException) {
@@ -129,6 +145,9 @@ object RootShellManager {
                     error = "Command timed out after ${timeoutMs}ms"
                 )
             } catch (e: Exception) {
+                if (allowShizukuSecondary && ShizukuManager.isPermissionGranted()) {
+                    return@withContext ShizukuManager.exec(command, timeoutMs)
+                }
                 CommandResult(
                     success = false,
                     exitCode = -1,

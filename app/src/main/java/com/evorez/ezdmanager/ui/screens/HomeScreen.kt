@@ -1,43 +1,67 @@
 package com.evorez.ezdmanager.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.evorez.ezdmanager.model.*
 import com.evorez.ezdmanager.profiles.ProfileRepository
+import com.evorez.ezdmanager.ui.components.GlassButton
 import com.evorez.ezdmanager.ui.components.GlassCard
+import com.evorez.ezdmanager.ui.components.GlassDialog
 import com.evorez.ezdmanager.ui.components.GlowIcon
 import com.evorez.ezdmanager.ui.components.StatusPill
+import com.evorez.ezdmanager.ui.components.UserAvatarBadge
+import com.evorez.ezdmanager.ui.components.captureLaunchBounds
 import com.evorez.ezdmanager.ui.theme.JetBrainsMono
 import com.evorez.ezdmanager.ui.theme.LocalEzdVisuals
 import com.evorez.ezdmanager.viewmodel.EzdUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
     state: EzdUiState,
     daemonStats: DaemonStats,
     onRetryRoot: () -> Unit,
+    onRequestShizuku: () -> Unit,
     onShowDetails: () -> Unit,
     onApplyProfile: (ProfileConfig) -> Unit,
-    onOpenTab: (MainTab) -> Unit,
-    onOpenTool: (ToolId) -> Unit
+    onOpenTool: (ToolId) -> Unit,
+    onClearSafeMode: () -> Unit,
+    onUpdateUserProfile: (String, String, Uri?) -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
+    var showEditProfileDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -45,7 +69,46 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        RootStatusCard(rootStatus = state.rootStatus, onRetryRoot = onRetryRoot)
+        // User Profile Card (Author card layout without external links)
+        UserHomeProfileCard(
+            userName = state.settings.userName,
+            userTagline = state.settings.userTagline,
+            photoPath = state.settings.userPhotoPath,
+            privilegeMode = state.effectivePrivilegeMode,
+            workMode = state.settings.workMode,
+            onEditClick = { showEditProfileDialog = true }
+        )
+
+        if (state.bootGuardState.safeModeActive) {
+            GlassCard(cornerRadius = 24.dp, highlightBorder = true) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    GlowIcon(Icons.Rounded.Warning, contentDescription = "Safe Mode", tint = MaterialTheme.colorScheme.error, size = 24.dp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Boot-Loop Safe Mode Active", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                        Text(
+                            text = state.bootGuardState.lastReason.ifBlank {
+                                "Startup tweaks & Root modules auto-disabled after 3 failed boots."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = onClearSafeMode) { Text("Clear") }
+                }
+            }
+        }
+
+        PrivilegeStatusCard(
+            rootStatus = state.rootStatus,
+            shizukuStatus = state.shizukuStatus,
+            effectiveMode = state.effectivePrivilegeMode,
+            onRetryRoot = onRetryRoot,
+            onRequestShizuku = onRequestShizuku
+        )
 
         AnimatedVisibility(visible = state.statusBanner.isNotBlank()) {
             GlassCard(cornerRadius = 22.dp, highlightBorder = true) {
@@ -53,7 +116,7 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    GlowIcon(Icons.Rounded.Info, contentDescription = null, tint = visuals.subtleRedAccent, size = 20.dp)
+                    GlowIcon(Icons.Rounded.Info, contentDescription = null, tint = visuals.accent, size = 20.dp)
                     Text(
                         text = state.statusBanner,
                         style = MaterialTheme.typography.bodyMedium,
@@ -65,122 +128,368 @@ fun HomeScreen(
 
         DeviceOverviewCard(overview = state.overview, onDetailsClick = onShowDetails)
 
-        // CPU & GPU Live Summary Card linking cleanly to CPU / GPU tabs
-        GlassCard(cornerRadius = 26.dp) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Performance Summary", style = MaterialTheme.typography.titleLarge)
-                StatusPill(
-                    label = if (daemonStats.activeGamePkg.isNotBlank()) "Game Active" else "${state.cpuPolicies.size} Clusters",
-                    accent = visuals.subtleRedAccent
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                SummaryStatChip(
-                    title = "CPU",
-                    value = state.overview.cpuUsagePercent?.let { "$it%" } ?: "--",
-                    sub = state.cpuPolicies.lastOrNull()?.currentKhz?.let { "${it / 1000} MHz" } ?: "Idle",
-                    icon = Icons.Rounded.Memory,
-                    onClick = { onOpenTab(MainTab.CPU) },
-                    modifier = Modifier.weight(1f)
-                )
-                SummaryStatChip(
-                    title = "GPU",
-                    value = state.gpuState.usagePercent?.let { "$it%" } ?: "--",
-                    sub = state.gpuState.currentMhz?.let { "$it MHz" } ?: "N/A",
-                    icon = Icons.Rounded.Speed,
-                    onClick = { onOpenTab(MainTab.GPU) },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
+        // Mixed CPU & GPU Unified Live Control Card (Balanced + Boost -> Performance profile)
+        MixedCpuGpuControlCard(
+            state = state,
+            daemonStats = daemonStats,
+            onOpenEngine = { onOpenTool(ToolId.CPU_GPU_CONTROL) },
+            onApplyProfile = onApplyProfile
+        )
 
-        // Game Space + Quick Profile Pills
-        val quickProfiles = ProfileRepository.builtInProfiles()
-        val activeName = quickProfiles.find { it.id == state.settings.activeProfileId }?.name ?: "Balanced"
-        GlassCard(cornerRadius = 26.dp, highlightBorder = state.settings.gameSpace.enabled) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                GlowIcon(Icons.Rounded.SportsEsports, contentDescription = "Game Space", tint = visuals.subtleRedAccent, size = 24.dp)
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Game Space & Profiles", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = "Active: $activeName · ${state.settings.gameSpace.selectedGames.size} selected game(s)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                OutlinedButton(
-                    onClick = { onOpenTool(ToolId.GAME_SPACE) },
-                    shape = CircleShape,
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 48.dp)
-                        .testTag("home_open_game_space")
-                ) {
-                    Text("Open")
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                quickProfiles.forEach { profile ->
-                    FilterChip(
-                        selected = profile.id == state.settings.activeProfileId,
-                        onClick = { onApplyProfile(profile) },
-                        label = { Text(profile.name) },
-                        shape = CircleShape,
-                        modifier = Modifier.testTag("home_profile_${profile.id}")
-                    )
-                }
-            }
-        }
+        // Header 2: 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴 (Pushes kernel limits, uncaps limits & locks 100% CPU & GPU)
+        BeastModeCard(
+            state = state,
+            onApplyProfile = onApplyProfile
+        )
 
-        // Quick Actions Strip
+        // 3 Distinct Mode Toggles: Power Save (GPU 10% / CPU 30%), Balanced (GPU 30% / CPU 50%), Performance (GPU 70% / CPU 70%)
+        ProfileTogglesStrip(
+            activeProfileId = state.settings.activeProfileId,
+            onApplyProfile = onApplyProfile
+        )
+
+        // Quick Actions Strip (launch-bounds tracked for iOS Card Morph)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            QuickActionPill("Battery Saving", Icons.Rounded.BatterySaver) { onOpenTool(ToolId.BATTERY_SAVING) }
+            QuickActionPill("ZRAM & VM", Icons.Rounded.SdStorage) { onOpenTool(ToolId.ZRAM_VM) }
+            QuickActionPill("I/O & Thermal", Icons.Rounded.Tune) { onOpenTool(ToolId.KERNEL_TWEAKS) }
+            QuickActionPill("Battery Stats", Icons.Rounded.BatteryChargingFull) { onOpenTool(ToolId.BATTERY_SAVING) }
+            QuickActionPill("Modules", Icons.Rounded.Extension) { onOpenTool(ToolId.MODULES) }
             QuickActionPill("Network", Icons.Rounded.Dns) { onOpenTool(ToolId.NETWORK) }
-            QuickActionPill("Display", Icons.Rounded.Tune) { onOpenTool(ToolId.DISPLAY) }
-            QuickActionPill("Spoof", Icons.Rounded.Smartphone) { onOpenTool(ToolId.DEVICE_SPOOF) }
-            QuickActionPill("Backup", Icons.Rounded.Backup) { onOpenTool(ToolId.BACKUP_RESTORE) }
+            QuickActionPill("App Backup", Icons.Rounded.InstallMobile) { onOpenTool(ToolId.APP_BACKUP) }
         }
 
-        Spacer(Modifier.height(92.dp))
+        Spacer(Modifier.height(124.dp))
+    }
+
+    if (showEditProfileDialog) {
+        EditUserProfileDialog(
+            initialName = state.settings.userName,
+            initialTagline = state.settings.userTagline,
+            initialPhotoPath = state.settings.userPhotoPath,
+            onDismiss = { showEditProfileDialog = false },
+            onSave = { name, tag, uri ->
+                onUpdateUserProfile(name, tag, uri)
+                showEditProfileDialog = false
+            }
+        )
     }
 }
 
 @Composable
-private fun RootStatusCard(
-    rootStatus: RootStatus,
-    onRetryRoot: () -> Unit
+private fun UserHomeProfileCard(
+    userName: String,
+    userTagline: String,
+    photoPath: String,
+    privilegeMode: PrivilegeMode,
+    workMode: WorkMode,
+    onEditClick: () -> Unit
 ) {
     val visuals = LocalEzdVisuals.current
-    val (title, subtitle, tint, icon) = when (rootStatus) {
-        RootStatus.GRANTED -> listOf("Root Granted", "Superuser shell & persistent daemon active", visuals.successColor, Icons.Rounded.VerifiedUser)
-        RootStatus.CHECKING -> listOf("Detecting Root Access…", "Probing su binary & daemon", visuals.subtleRedAccent, Icons.Rounded.Sync)
-        RootStatus.DENIED -> listOf("Root Denied", "su binary found, grant permission in Magisk/KSU", visuals.warningColor, Icons.Rounded.GppBad)
-        else -> listOf("Root Unavailable", "No su binary detected · Read-only inspection", MaterialTheme.colorScheme.onSurfaceVariant, Icons.Rounded.Lock)
+    GlassCard(cornerRadius = 26.dp, highlightBorder = true) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            UserAvatarBadge(photoPath = photoPath, size = 56.dp, borderColor = visuals.accent)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = userName.ifBlank { "Evorez User" },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = userTagline.ifBlank { "Device Tuner" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = visuals.accent,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    StatusPill(
+                        label = "${privilegeMode.label} Mode",
+                        accent = when (privilegeMode) {
+                            PrivilegeMode.ROOT -> visuals.successColor
+                            PrivilegeMode.SHIZUKU -> visuals.accent
+                            PrivilegeMode.BASIC -> visuals.warningColor
+                        }
+                    )
+                    StatusPill(
+                        label = "Work: ${workMode.label}",
+                        accent = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(
+                onClick = onEditClick,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("edit_user_profile_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Edit,
+                    contentDescription = "Edit Profile",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditUserProfileDialog(
+    initialName: String,
+    initialTagline: String,
+    initialPhotoPath: String,
+    onDismiss: () -> Unit,
+    onSave: (String, String, Uri?) -> Unit
+) {
+    val context = LocalContext.current
+    val visuals = LocalEzdVisuals.current
+    var name by remember { mutableStateOf(initialName) }
+    var tagline by remember { mutableStateOf(initialTagline) }
+    var pickedUri by remember { mutableStateOf<Uri?>(null) }
+
+    val pickedBitmap by produceState<ImageBitmap?>(initialValue = null, key1 = pickedUri) {
+        value = pickedUri?.let { uri ->
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+                }.getOrNull()
+            }
+        }
     }
 
-    GlassCard(cornerRadius = 24.dp, highlightBorder = rootStatus == RootStatus.GRANTED) {
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) pickedUri = uri
+    }
+
+    GlassDialog(
+        title = "Edit Profile",
+        onDismiss = onDismiss,
+        confirmText = "Save",
+        onConfirm = { onSave(name, tagline, pickedUri) }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (pickedBitmap != null) {
+                Image(
+                    bitmap = pickedBitmap!!,
+                    contentDescription = "New Profile Photo",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(CircleShape)
+                        .border(2.dp, visuals.accent, CircleShape)
+                )
+            } else {
+                UserAvatarBadge(photoPath = initialPhotoPath, size = 58.dp)
+            }
+            OutlinedButton(
+                onClick = {
+                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                shape = CircleShape,
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+            ) {
+                Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Change Photo")
+            }
+        }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Display Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = tagline,
+            onValueChange = { tagline = it },
+            label = { Text("Tagline") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+private fun MixedCpuGpuControlCard(
+    state: EzdUiState,
+    daemonStats: DaemonStats,
+    onOpenEngine: () -> Unit,
+    onApplyProfile: (ProfileConfig) -> Unit
+) {
+    val visuals = LocalEzdVisuals.current
+    val cpuLoad = state.overview.cpuUsagePercent?.let { "$it%" } ?: "--"
+    val littleCluster = state.cpuPolicies.firstOrNull()
+    val primeCluster = state.cpuPolicies.lastOrNull()
+    val gpu = state.gpuState
+    val builtIns = remember { ProfileRepository.builtInProfiles() }
+    val perfProf = builtIns.find { it.id == "performance" }
+    val balProf = builtIns.find { it.id == "balanced" }
+
+    GlassCard(
+        cornerRadius = 26.dp,
+        highlightBorder = daemonStats.perAppMonitorActive,
+        onClick = onOpenEngine,
+        modifier = Modifier
+            .captureLaunchBounds()
+            .testTag("home_cpu_gpu_card")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                GlowIcon(Icons.Rounded.Memory, contentDescription = "CPU & GPU", tint = visuals.accent, size = 24.dp)
+                Column {
+                    Text("CPU & GPU Control", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = if (daemonStats.perAppMonitorActive) "Per-App Daemon Active" else "${state.cpuPolicies.size} CPU Clusters · ${gpu.vendorHint}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            StatusPill("Open Engine", visuals.accent)
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(18.dp),
+                color = visuals.glassSurfaceElevated,
+                border = BorderStroke(1.dp, visuals.glassBorder)
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("CPU LOAD · $cpuLoad", style = MaterialTheme.typography.labelMedium, color = visuals.accent, fontFamily = JetBrainsMono)
+                    Text(
+                        text = primeCluster?.currentKhz?.let { "${it / 1000} MHz Peak" }
+                            ?: littleCluster?.currentKhz?.let { "${it / 1000} MHz" }
+                            ?: "Monitor",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = JetBrainsMono
+                    )
+                    Text(
+                        text = "Gov: ${primeCluster?.currentGovernor?.ifBlank { "-" } ?: "-"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(18.dp),
+                color = visuals.glassSurfaceElevated,
+                border = BorderStroke(1.dp, visuals.glassBorder)
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    val gpuLoad = gpu.usagePercent?.let { "$it%" } ?: "--"
+                    Text("GPU LOAD · $gpuLoad", style = MaterialTheme.typography.labelMedium, color = visuals.accent, fontFamily = JetBrainsMono)
+                    Text(
+                        text = gpu.currentMhz?.let { "$it MHz" } ?: "Standby",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = JetBrainsMono
+                    )
+                    Text(
+                        text = "Gov: ${gpu.currentGovernor.ifBlank { "-" }}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = JetBrainsMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (balProf != null) {
+                GlassButton(
+                    text = "Balanced",
+                    onClick = { onApplyProfile(balProf) },
+                    accent = state.settings.activeProfileId == balProf.id,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (perfProf != null) {
+                GlassButton(
+                    text = "Boost",
+                    icon = Icons.Rounded.Bolt,
+                    onClick = { onApplyProfile(perfProf) },
+                    accent = state.settings.activeProfileId == perfProf.id,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            OutlinedButton(
+                onClick = onOpenEngine,
+                shape = CircleShape,
+                modifier = Modifier
+                    .captureLaunchBounds()
+                    .defaultMinSize(minHeight = 48.dp)
+            ) {
+                Text("Tune")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivilegeStatusCard(
+    rootStatus: RootStatus,
+    shizukuStatus: ShizukuStatus,
+    effectiveMode: PrivilegeMode,
+    onRetryRoot: () -> Unit,
+    onRequestShizuku: () -> Unit
+) {
+    val visuals = LocalEzdVisuals.current
+    val (title, subtitle, tint, icon) = when (effectiveMode) {
+        PrivilegeMode.ROOT -> listOf(
+            "Root Granted",
+            "Full superuser kernel, CPU/GPU, ZRAM & resetprop active",
+            visuals.successColor,
+            Icons.Rounded.VerifiedUser
+        )
+        PrivilegeMode.SHIZUKU -> listOf(
+            "Shizuku Active",
+            "Rootless ADB shell enabled · Display, Apps, DNS & Battery tweaks unlocked",
+            visuals.accent,
+            Icons.Rounded.Key
+        )
+        PrivilegeMode.BASIC -> when (rootStatus) {
+            RootStatus.CHECKING -> listOf("Detecting Privileges…", "Checking Root (su) & Shizuku service", visuals.accent, Icons.Rounded.Sync)
+            RootStatus.DENIED -> listOf("Root Denied", "Grant su in Magisk/KSU or activate Shizuku", visuals.warningColor, Icons.Rounded.GppBad)
+            else -> listOf("Basic Monitor Mode", "Grant Root or Shizuku for active tuning", MaterialTheme.colorScheme.onSurfaceVariant, Icons.Rounded.Lock)
+        }
+    }
+
+    GlassCard(
+        cornerRadius = 24.dp,
+        highlightBorder = effectiveMode != PrivilegeMode.BASIC
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -189,22 +498,29 @@ private fun RootStatusCard(
             GlowIcon(
                 icon = icon as ImageVector,
                 contentDescription = title as String,
-                tint = tint as androidx.compose.ui.graphics.Color,
+                tint = tint as Color,
                 size = 24.dp
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(subtitle as String, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (rootStatus != RootStatus.GRANTED && rootStatus != RootStatus.CHECKING) {
-                OutlinedButton(
-                    onClick = onRetryRoot,
-                    shape = CircleShape,
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 48.dp)
-                        .testTag("retry_root_button")
-                ) {
-                    Text("Retry")
+            when {
+                effectiveMode == PrivilegeMode.BASIC && shizukuStatus == ShizukuStatus.PERMISSION_REQUIRED -> {
+                    OutlinedButton(
+                        onClick = onRequestShizuku,
+                        shape = CircleShape,
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    ) { Text("Shizuku") }
+                }
+                effectiveMode != PrivilegeMode.ROOT && rootStatus != RootStatus.CHECKING -> {
+                    OutlinedButton(
+                        onClick = onRetryRoot,
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("retry_root_button")
+                    ) { Text("Retry") }
                 }
             }
         }
@@ -233,7 +549,7 @@ private fun DeviceOverviewCard(
                     .defaultMinSize(minHeight = 48.dp)
                     .testTag("device_details_button")
             ) {
-                Text("Specs", color = visuals.subtleRedAccent)
+                Text("Specs", color = visuals.accent)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -260,38 +576,6 @@ private fun OverviewRow(label: String, value: String) {
 }
 
 @Composable
-private fun SummaryStatChip(
-    title: String,
-    value: String,
-    sub: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val visuals = LocalEzdVisuals.current
-    Surface(
-        modifier = modifier
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
-        shape = CircleShape,
-        color = visuals.glassSurfaceElevated,
-        border = BorderStroke(1.dp, visuals.glassBorder)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            GlowIcon(icon = icon, contentDescription = title, tint = visuals.subtleRedAccent, size = 18.dp)
-            Column {
-                Text("$title $value", style = MaterialTheme.typography.labelLarge, fontFamily = JetBrainsMono)
-                Text(sub, style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMono, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
 private fun QuickActionPill(
     label: String,
     icon: ImageVector,
@@ -300,6 +584,7 @@ private fun QuickActionPill(
     val visuals = LocalEzdVisuals.current
     Surface(
         modifier = Modifier
+            .captureLaunchBounds()
             .defaultMinSize(minHeight = 48.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick),
@@ -312,8 +597,301 @@ private fun QuickActionPill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            GlowIcon(icon, contentDescription = label, tint = visuals.subtleRedAccent, size = 18.dp)
+            GlowIcon(icon, contentDescription = label, tint = visuals.accent, size = 18.dp)
             Text(label, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@Composable
+private fun BeastModeCard(
+    state: EzdUiState,
+    onApplyProfile: (ProfileConfig) -> Unit
+) {
+    val visuals = LocalEzdVisuals.current
+    val isBeastActive = state.settings.activeProfileId == "beast"
+    val builtIns = remember { ProfileRepository.builtInProfiles() }
+    val beastProfile = builtIns.find { it.id == "beast" } ?: return
+    val balProfile = builtIns.find { it.id == "balanced" } ?: return
+
+    val fieryColor = Color(0xFFFF2A2A)
+    val amberGlow = Color(0xFFFF9500)
+
+    val cardBorderBrush = if (isBeastActive) {
+        Brush.linearGradient(listOf(fieryColor, amberGlow, fieryColor))
+    } else {
+        Brush.linearGradient(
+            listOf(
+                fieryColor.copy(alpha = 0.45f),
+                visuals.glassBorder,
+                amberGlow.copy(alpha = 0.35f)
+            )
+        )
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .captureLaunchBounds()
+            .testTag("beast_mode_card"),
+        shape = RoundedCornerShape(26.dp),
+        color = if (isBeastActive) {
+            fieryColor.copy(alpha = if (visuals.isDark) 0.14f else 0.08f)
+        } else {
+            visuals.glassSurfaceElevated
+        },
+        border = BorderStroke(if (isBeastActive) 1.8.dp else 1.2.dp, cardBorderBrush),
+        shadowElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = fieryColor.copy(alpha = 0.20f),
+                        border = BorderStroke(1.dp, fieryColor.copy(alpha = 0.60f)),
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Bolt,
+                                contentDescription = "Beast Mode",
+                                tint = fieryColor,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Column {
+                        // Header 2 as specifically requested: 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴
+                        Text(
+                            text = "𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Black,
+                            color = if (isBeastActive) fieryColor else MaterialTheme.colorScheme.onSurface,
+                            letterSpacing = 1.sp
+                        )
+                        Text(
+                            text = if (isBeastActive) "ACTIVE · 100% CPU & GPU HARD LOCKED" else "Push Kernel Limits · Uncap Overclock",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isBeastActive) amberGlow else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                StatusPill(
+                    label = if (isBeastActive) "LOCKED 100%" else "MAX LOCK",
+                    accent = if (isBeastActive) fieryColor else amberGlow
+                )
+            }
+
+            Text(
+                text = "Pushes kernel limits, uncaps thermal boundaries, forces all offline CPU cores online, and hard locks ALL CPU clusters and GPU at 100% maximum clock frequency.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Live status badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                StatusPill("CPU: 100%", fieryColor)
+                StatusPill("GPU: 100%", amberGlow)
+                StatusPill("All Cores Online", visuals.accent)
+                StatusPill("120Hz", visuals.successColor)
+            }
+
+            Button(
+                onClick = {
+                    if (isBeastActive) {
+                        onApplyProfile(balProfile)
+                    } else {
+                        onApplyProfile(beastProfile)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("beast_mode_toggle_btn"),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isBeastActive) fieryColor else fieryColor.copy(alpha = 0.85f),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Bolt,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isBeastActive) "DISENGAGE 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴" else "ACTIVATE 𝙱𝙴𝙰𝚂𝚃 𝙼𝙾𝙳𝙴",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    letterSpacing = 0.5.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileTogglesStrip(
+    activeProfileId: String,
+    onApplyProfile: (ProfileConfig) -> Unit
+) {
+    val visuals = LocalEzdVisuals.current
+    val builtIns = remember { ProfileRepository.builtInProfiles() }
+    val powerSaveProf = builtIns.find { it.id == "powersave" }
+    val balProf = builtIns.find { it.id == "balanced" }
+    val perfProf = builtIns.find { it.id == "performance" }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Performance Profiles",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "3 Profiles + Beast Mode",
+                style = MaterialTheme.typography.labelSmall,
+                color = visuals.accent
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // 1. Power Save: GPU 10%, CPU 30%
+            if (powerSaveProf != null) {
+                ProfileToggleCard(
+                    title = "Power Save",
+                    cpuSpec = "CPU 30%",
+                    gpuSpec = "GPU 10%",
+                    icon = Icons.Rounded.BatteryChargingFull,
+                    accentColor = visuals.successColor,
+                    isActive = activeProfileId == "powersave",
+                    onClick = { onApplyProfile(powerSaveProf) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // 2. Balanced Mode: GPU 30%, CPU 50%
+            if (balProf != null) {
+                ProfileToggleCard(
+                    title = "Balanced",
+                    cpuSpec = "CPU 50%",
+                    gpuSpec = "GPU 30%",
+                    icon = Icons.Rounded.Tune,
+                    accentColor = visuals.accent,
+                    isActive = activeProfileId == "balanced",
+                    onClick = { onApplyProfile(balProf) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // 3. Performance Mode: GPU 70%, CPU 70%
+            if (perfProf != null) {
+                ProfileToggleCard(
+                    title = "Performance",
+                    cpuSpec = "CPU 70%",
+                    gpuSpec = "GPU 70%",
+                    icon = Icons.Rounded.Speed,
+                    accentColor = Color(0xFFFF9500),
+                    isActive = activeProfileId == "performance",
+                    onClick = { onApplyProfile(perfProf) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileToggleCard(
+    title: String,
+    cpuSpec: String,
+    gpuSpec: String,
+    icon: ImageVector,
+    accentColor: Color,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val visuals = LocalEzdVisuals.current
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .defaultMinSize(minHeight = 84.dp)
+            .testTag("profile_toggle_${title.lowercase().replace(" ", "_")}"),
+        shape = RoundedCornerShape(18.dp),
+        color = if (isActive) accentColor.copy(alpha = if (visuals.isDark) 0.22f else 0.14f) else visuals.glassSurfaceElevated,
+        border = BorderStroke(
+            width = if (isActive) 1.6.dp else 1.dp,
+            color = if (isActive) accentColor else visuals.glassBorder
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (isActive) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+                if (isActive) {
+                    Surface(
+                        shape = CircleShape,
+                        color = accentColor,
+                        modifier = Modifier.size(8.dp)
+                    ) {}
+                }
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                color = if (isActive) accentColor else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
+            )
+            Text(
+                text = "$cpuSpec\n$gpuSpec",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = JetBrainsMono,
+                color = if (isActive) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 13.sp
+            )
         }
     }
 }

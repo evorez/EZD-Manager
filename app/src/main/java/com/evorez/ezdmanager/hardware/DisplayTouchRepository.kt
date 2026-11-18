@@ -7,7 +7,9 @@ import android.view.Display
 import com.evorez.ezdmanager.model.DisplayModeInfo
 import com.evorez.ezdmanager.model.DisplayState
 import com.evorez.ezdmanager.model.TouchState
+import com.evorez.ezdmanager.root.CommandBridge
 import com.evorez.ezdmanager.root.RootShellManager
+import com.evorez.ezdmanager.root.ShizukuManager
 import kotlin.math.roundToInt
 
 class DisplayTouchRepository(private val context: Context) {
@@ -106,12 +108,19 @@ class DisplayTouchRepository(private val context: Context) {
         )
     }
 
-    suspend fun setRefreshRate(hz: Float, rootGranted: Boolean): Pair<Boolean, String> {
+    suspend fun setRefreshRate(
+        hz: Float,
+        rootGranted: Boolean,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val target = hz.roundToInt().toFloat()
-        if (rootGranted) {
-            val r1 = RootShellManager.exec("settings put system peak_refresh_rate $target")
-            val r2 = RootShellManager.exec("settings put system min_refresh_rate $target")
-            if (r1.success && r2.success) {
+        if (rootGranted || shizukuGranted) {
+            val r = CommandBridge.execPrivileged(
+                "settings put system peak_refresh_rate $target && settings put system min_refresh_rate $target",
+                useRoot = rootGranted,
+                useShizuku = shizukuGranted
+            )
+            if (r.success) {
                 return true to "Refresh rate set to ${target.toInt()} Hz"
             }
         }
@@ -122,13 +131,17 @@ class DisplayTouchRepository(private val context: Context) {
                 true to "Refresh rate set to ${target.toInt()} Hz"
             }.getOrElse { false to (it.message ?: "Failed to write refresh rate") }
         } else {
-            false to "Requires Root or Modify System Settings permission"
+            false to "Requires Root, Shizuku, or Modify System Settings permission"
         }
     }
 
-    suspend fun resetRefreshRate(rootGranted: Boolean): Pair<Boolean, String> {
-        if (rootGranted) {
-            RootShellManager.exec("settings delete system peak_refresh_rate; settings delete system min_refresh_rate")
+    suspend fun resetRefreshRate(rootGranted: Boolean, shizukuGranted: Boolean = false): Pair<Boolean, String> {
+        if (rootGranted || shizukuGranted) {
+            CommandBridge.execPrivileged(
+                "settings delete system peak_refresh_rate; settings delete system min_refresh_rate",
+                useRoot = rootGranted,
+                useShizuku = shizukuGranted
+            )
             return true to "Refresh rate restored to system default"
         }
         return if (Settings.System.canWrite(context)) {
@@ -137,16 +150,23 @@ class DisplayTouchRepository(private val context: Context) {
                 true to "Refresh rate reset to adaptive default"
             }.getOrElse { false to "Could not reset refresh rate" }
         } else {
-            false to "Requires Root or Modify System Settings permission"
+            false to "Requires Root, Shizuku, or Modify System Settings permission"
         }
     }
 
-    suspend fun setBrightness(value: Int, auto: Boolean, rootGranted: Boolean): Pair<Boolean, String> {
+    suspend fun setBrightness(
+        value: Int,
+        auto: Boolean,
+        rootGranted: Boolean,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val clamped = value.coerceIn(5, 255)
         val mode = if (auto) 1 else 0
-        if (rootGranted) {
-            val res = RootShellManager.exec(
-                "settings put system screen_brightness_mode $mode; settings put system screen_brightness $clamped"
+        if (rootGranted || shizukuGranted) {
+            val res = CommandBridge.execPrivileged(
+                "settings put system screen_brightness_mode $mode; settings put system screen_brightness $clamped",
+                useRoot = rootGranted,
+                useShizuku = shizukuGranted
             )
             if (res.success) return true to if (auto) "Auto-brightness enabled" else "Brightness set to ${(clamped * 100) / 255}%"
         }
@@ -157,7 +177,7 @@ class DisplayTouchRepository(private val context: Context) {
                 true to "Brightness updated"
             }.getOrElse { false to (it.message ?: "Failed") }
         } else {
-            false to "Requires Root or Modify System Settings permission"
+            false to "Requires Root, Shizuku, or Modify System Settings permission"
         }
     }
 
@@ -167,9 +187,14 @@ class DisplayTouchRepository(private val context: Context) {
         else false to (msg ?: "HBM write rejected")
     }
 
-    suspend fun setSaturation(saturation: Float, kcalPathSupported: Boolean): Pair<Boolean, String> {
+    suspend fun setSaturation(
+        saturation: Float,
+        kcalPathSupported: Boolean,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val clamped = saturation.coerceIn(0.4f, 2.0f)
-        if (kcalPathSupported) {
+        if (kcalPathSupported && rootGranted) {
             val kcalValue = (255 * clamped).roundToInt().coerceIn(128, 383)
             val (ok, msg) = RootShellManager.writeAndVerify(
                 "/sys/devices/platform/kcal_ctrl.0/kcal_sat",
@@ -178,13 +203,15 @@ class DisplayTouchRepository(private val context: Context) {
             if (ok) return true to "KCAL saturation set to ${String.format(java.util.Locale.US, "%.2f", clamped)}x"
             return false to (msg ?: "KCAL write failed")
         }
-        val res = RootShellManager.exec(
-            "service call SurfaceFlinger 1022 f ${String.format(java.util.Locale.US, "%.2f", clamped)}"
+        val res = CommandBridge.execPrivileged(
+            "service call SurfaceFlinger 1022 f ${String.format(java.util.Locale.US, "%.2f", clamped)}",
+            useRoot = rootGranted,
+            useShizuku = shizukuGranted
         )
         return if (res.success) {
             true to "Display saturation set to ${String.format(java.util.Locale.US, "%.2f", clamped)}x"
         } else {
-            false to "Saturation requires root access on this device"
+            false to "Saturation requires Root or Shizuku permission"
         }
     }
 
@@ -193,7 +220,7 @@ class DisplayTouchRepository(private val context: Context) {
         return if (ok) true to "CABC ${if (enabled) "enabled" else "disabled"}" else false to (msg ?: "CABC write rejected")
     }
 
-    suspend fun scanTouch(): TouchState {
+    suspend fun scanTouch(shizukuGranted: Boolean = false): TouchState {
         val script = """
             find_first() {
               for p in "$@"; do
@@ -212,6 +239,17 @@ class DisplayTouchRepository(private val context: Context) {
         """.trimIndent()
         val res = RootShellManager.exec(script, timeoutMs = 3_500L)
         if (!res.success) {
+            if (shizukuGranted) {
+                val hwcRes = ShizukuManager.exec(
+                    "dumpsys SurfaceFlinger 2>/dev/null | grep -i -m1 'disable HWC' || true",
+                    timeoutMs = 2_500L
+                )
+                val hwo = hwcRes.stdoutText.contains("true", ignoreCase = true)
+                return TouchState(
+                    hwOverlaysDisabled = hwo,
+                    statusNote = "Shizuku mode: SurfaceFlinger HW Overlay toggle available. Kernel touch sysfs requires Root."
+                )
+            }
             return TouchState(
                 statusNote = "Root access required to probe kernel touch sysfs nodes."
             )
@@ -274,13 +312,21 @@ class DisplayTouchRepository(private val context: Context) {
         return if (ok) true to "$label applied ($msg)" else false to "$label failed: ${msg ?: "rejected"}"
     }
 
-    suspend fun setDisableHwOverlays(disable: Boolean): Pair<Boolean, String> {
+    suspend fun setDisableHwOverlays(
+        disable: Boolean,
+        rootGranted: Boolean = true,
+        shizukuGranted: Boolean = false
+    ): Pair<Boolean, String> {
         val arg = if (disable) "1" else "0"
-        val res = RootShellManager.exec("service call SurfaceFlinger 1008 i32 $arg")
+        val res = CommandBridge.execPrivileged(
+            "service call SurfaceFlinger 1008 i32 $arg",
+            useRoot = rootGranted,
+            useShizuku = shizukuGranted
+        )
         return if (res.success) {
             true to "HW Overlays ${if (disable) "disabled (GPU compositing)" else "restored"}"
         } else {
-            false to "SurfaceFlinger HW overlay toggle requires root"
+            false to "SurfaceFlinger HW overlay toggle requires Root or Shizuku"
         }
     }
 }

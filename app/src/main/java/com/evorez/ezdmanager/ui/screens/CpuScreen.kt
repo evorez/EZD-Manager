@@ -123,7 +123,7 @@ fun CpuScreen(
             }
         }
 
-        Spacer(Modifier.height(92.dp))
+        Spacer(Modifier.height(4.dp))
     }
 }
 
