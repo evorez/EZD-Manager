@@ -1,0 +1,5 @@
+{
+  "name": "EZD Manager",
+  "description": "Evorez EZD Manager — hardware tuning, CPU/GPU control, ZRAM & VM, per-app profiles, network DNS, audio DSP, and root toolkit.",
+  "requestFramePermissions": []
+}
